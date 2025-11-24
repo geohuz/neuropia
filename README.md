@@ -196,7 +196,7 @@ Virtual Key (多) ←→ (多) 允许的模型
 
 # 📁 Neuropia AI 平台 - 完整目录结构说明
 
-```markdown
+
 # Neuropia AI 平台 - 项目目录结构
 
 ## 🏗️ 整体项目结构
