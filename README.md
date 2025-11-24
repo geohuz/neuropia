@@ -1,10 +1,11 @@
 ## 📋 Neuropia AI 平台 MVP 设计文档
 
-```markdown
 # Neuropia AI 平台 - MVP 设计文档
 
 ## 🎯 核心业务模型
+
 **AI 服务批发商模式**：
+
 ```
 平台 API Keys (批发价) → Neuropia平台 (加价) → 客户 Virtual Keys (零售价)
 ```
@@ -12,6 +13,7 @@
 ## 🏗️ 系统架构
 
 ### 服务组件
+
 ```mermaid
 graph TB
     C[客户端] --> G[API Gateway:3001]
@@ -23,6 +25,7 @@ graph TB
 ```
 
 ### 数据流
+
 1. **客户端** → `x-virtual-key` → **API Gateway**
 2. **API Gateway** → 验证 → **Config Service** (获取配置)
 3. **Config Service** → 生成 → **Portkey 配置**
@@ -33,6 +36,7 @@ graph TB
 ## 🗄️ 核心数据库设计
 
 ### 关键表结构
+
 ```sql
 -- 用户认证
 auth.login (id, email, hashed_password, role)
@@ -63,6 +67,7 @@ data.usage_log (user_id, provider, model, tokens, cost)
 ## 💰 计费系统
 
 ### 成本计算
+
 ```javascript
 // 平台成本
 platformCost = inputTokens * inputRate + outputTokens * outputRate
@@ -104,6 +109,7 @@ pending → (充值) → active → (余额≤0) → overdue → (充值≥阈�
 - [x] 速率限制
 
 ### 服务端点
+
 ```
 POST /api/chat/completions      # AI 聊天（需 Virtual Key）
 GET  /api/config/virtual-keys/:key  # 配置查询
