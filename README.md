@@ -198,8 +198,6 @@ Virtual Key (多) ←→ (多) 允许的模型
 
 源码文档: https://deepwiki.com/Portkey-AI/gateway
 
-您说得对！一个详细的目录结构说明对于新对话中的上下文理解至关重要。让我为您创建一个完整的项目目录结构文档：
-
 # 📁 Neuropia AI 平台 - 完整目录结构说明
 
 
