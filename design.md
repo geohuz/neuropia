@@ -188,6 +188,14 @@ Virtual Key (多) ←→ (多) 允许的模型
 
 # portkey gateway 参考信息
 
-https://github.com/Portkey-AI/gateway
+项目地址: https://github.com/Portkey-AI/gateway
 
-https://deepwiki.com/Portkey-AI/gateway
+源码文档: https://deepwiki.com/Portkey-AI/gateway
+
+# 数据库脚本
+
+包含所有目前的数据库schema对象内容:
+
+```
+db.sql
+```
