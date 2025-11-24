@@ -200,6 +200,7 @@ Virtual Key (多) ←→ (多) 允许的模型
 # Neuropia AI 平台 - 项目目录结构
 
 ## 🏗️ 整体项目结构
+
 ```
 neuropia-platform/
 ├── 🚀 neuropia_api_gateway/          # 业务网关服务 (端口:3001)
@@ -213,6 +214,7 @@ neuropia-platform/
 ```
 
 ## 🚀 neuropia_api_gateway/ - 业务网关服务
+
 ```
 neuropia_api_gateway/
 ├── 📁 src/
@@ -243,6 +245,7 @@ neuropia_api_gateway/
 - ✅ 速率限制和访问控制
 
 ## ⚙️ neuropia_config_service/ - 配置管理服务
+
 ```
 neuropia_config_service/
 ├── 📁 src/
@@ -266,6 +269,7 @@ neuropia_config_service/
 - ✅ 提供商模型映射管理
 
 ## 🔗 shared/ - 共享工具和配置
+
 ```
 shared/
 ├── 📁 database/
@@ -282,6 +286,7 @@ shared/
 - ✅ 工具函数和日志配置
 
 ## 🧪 tests/ - 测试套件
+
 ```
 tests/
 ├── 📁 integration/                   # 集成测试
@@ -301,6 +306,7 @@ tests/
 - ✅ 提供商集成测试
 
 ## 🐳 基础设施配置
+
 ```
 docker-compose.yml                    # 开发环境服务编排
 ├── 🗄️ postgres:5432                 # PostgreSQL数据库
@@ -312,6 +318,7 @@ docker-compose.yml                    # 开发环境服务编排
 ```
 
 ## 🔑 核心环境变量
+
 ```bash
 # 数据库
 DATABASE_URL=postgresql://postgres:password@localhost:5432/neuropia
