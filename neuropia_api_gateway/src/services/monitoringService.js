@@ -127,6 +127,8 @@ async function trackApiRequest(userContext, portkeyResponse, responseBody, reque
 
             await updateVirtualKeyUsage(monitoringRecord);
             await updateProviderStats(monitoringRecord);
+            await updateSortedSets(monitoringRecord);
+
 
             await trackCostAnalysis({
               user_id: userContext.virtual_key,
@@ -345,6 +347,32 @@ function collectObservabilityHeaders(response) {
 function generateTraceId() {
     return `trace_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
+
+// ------------------------------
+// 更新 ZSET 统计
+// ------------------------------
+async function updateSortedSets(record) {
+    try {
+        const client = await RedisService.connect();
+        const { virtual_key, usage, provider_info } = record;
+
+        if (virtual_key) {
+            // 用户使用量 ZSET
+            const userZSetKey = REDIS_SCHEMA.SORTED_SETS.VIRTUAL_KEY_TOTAL_TOKENS;
+            await client.zIncrBy(userZSetKey, usage.total_tokens || 0, virtual_key);
+        }
+
+        if (provider_info?.provider) {
+            // 服务商性能 ZSET
+            const providerZSetKey = REDIS_SCHEMA.SORTED_SETS.PROVIDER_TOTAL_TOKENS;
+            await client.zIncrBy(providerZSetKey, usage.total_tokens || 0, provider_info.provider);
+        }
+
+    } catch (error) {
+        console.error('更新 ZSET 失败:', { error: error.message, virtual_key: record.virtual_key });
+    }
+}
+
 
 // ------------------------------
 // 导出

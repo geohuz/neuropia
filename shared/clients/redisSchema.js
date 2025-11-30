@@ -32,6 +32,8 @@ const REDIS_SCHEMA = {
     VIRTUAL_KEY_RANKING: "ranking:virtual_keys",
     PROVIDER_RANKING: "ranking:providers",
     MODEL_RANKING: "ranking:models",
+    VIRTUAL_KEY_TOTAL_TOKENS: "analytics:virtual_key:total_tokens",
+    PROVIDER_TOTAL_TOKENS: "analytics:provider:total_tokens", // 新增
   },
 
   // --------------------------
