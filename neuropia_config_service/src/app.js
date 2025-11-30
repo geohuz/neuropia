@@ -1,173 +1,189 @@
 // neuropia_config_service/src/app.js
-const express = require('express');
-const cors = require('cors');
-// const helmet = require('helmet'); // 暂时注释掉
-const { ConfigManager } = require('./services/configManager');
-const { RedisService } = require('./services/redisService');
-const { PortkeyConfigGenerator } = require('./services/portkeyConfigGenerator');
-const PGListener = require('./listeners/pgListener');
+const express = require("express");
+const pgListener = require("./listeners/pgListener");
+const { PortkeyConfigGenerator } = require("./services/portkeyConfigGenerator");
+const RedisService = require("@shared/clients/redis")
 
-class NeuropiaConfigService {
-    constructor() {
-        this.app = express();
-        // 不在构造函数中初始化
-    }
+class ConfigServiceApp {
+  constructor() {
+    this.app = express();
+    this.setupMiddleware();
+    this.setupRoutes();
+  }
 
-    async initialize() {
-        try {
-            console.log('Initializing Neuropia Config Service...');
+  setupMiddleware() {
+    this.app.use(express.json());
 
-            // 1. 先连接 Redis
-            await RedisService.connect();
-            console.log('Redis connected successfully');
+    // CORS
+    this.app.use((req, res, next) => {
+      console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  console.log('📦 请求头:', req.headers);
+  console.log('📝 请求体:', JSON.stringify(req.body, null, 2)); // 🎯 添加请求体日志
+      res.header("Access-Control-Allow-Origin", "*");
+      res.header(
+        "Access-Control-Allow-Headers",
+        "Origin, X-Requested-With, Content-Type, Accept, Authorization",
+      );
+      res.header(
+        "Access-Control-Allow-Methods",
+        "GET, POST, PUT, DELETE, OPTIONS",
+      );
+      next();
+    });
 
-            // 2. 设置中间件和路由
-            this.setupMiddleware();
-            this.setupRoutes();
+    // 请求日志
+    this.app.use((req, res, next) => {
+      console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+      next();
+    });
+  }
 
-            // 3. 加载配置到 Redis
-            await ConfigManager.loadAllConfigs();
-            console.log('All configurations loaded to Redis');
+  setupRoutes() {
+    // 健康检查
+    this.app.get("/health", (req, res) => {
+      res.json({
+        status: "healthy",
+        service: "config-service",
+        timestamp: new Date().toISOString(),
+      });
+    });
 
-            // 4. 启动数据库监听
-            await PGListener.connect();
-            console.log('Database listener started');
+    // 🎯 生成 Portkey 配置
+    this.app.post("/generate-config", this.handleGenerateConfig.bind(this));
 
-            console.log('Neuropia Config Service initialized successfully');
-        } catch (error) {
-            console.error('Config Service initialization failed:', error);
-            throw error;
+    // 🎯 清理缓存
+    this.app.post("/clear-cache", this.handleClearCache.bind(this));
+
+    // 🎯 删除废弃的路由：/reload-configs 和 /preload-cache
+  }
+
+  /**
+   * 生成 Portkey 配置
+   */
+
+async handleGenerateConfig(req, res) {
+    try {
+        const { userContext, virtualKeyConfig, requestBody } = req.body;
+
+        if (!userContext?.user_id || !userContext?.virtual_key) {
+            return res.status(400).json({
+                success: false,
+                error: "Missing required user context",
+            });
         }
-    }
 
-    setupMiddleware() {
-        // this.app.use(helmet());
-        this.app.use(cors());
-        this.app.use(express.json());
-    }
+        // 🎯 修改：不再强制要求 requestBody.model
+        // 如果没有提供 model，系统会根据配置自动选择
 
-    setupRoutes() {
-        // 配置生成端点
-        this.app.post('/generate-config', async (req, res) => {
-            try {
-                const { userContext, virtualKeyConfig, requestBody } = req.body;
-
-                const config = await PortkeyConfigGenerator.generateConfig(
-                    userContext,
-                    virtualKeyConfig,
-                    requestBody
-                );
-
-                res.json({ success: true, config });
-            } catch (error) {
-                console.error('Config generation error:', error);
-                res.status(500).json({
-                    success: false,
-                    error: error.message
-                });
-            }
+        console.log("🎯 Generating config for:", {
+            user_id: userContext.user_id,
+            virtual_key: userContext.virtual_key,
+            model: requestBody?.model || 'auto-select'  // 🎯 标记为自动选择
         });
 
-        // 重新加载配置
-        this.app.post('/reload-configs', async (req, res) => {
-            try {
-                await ConfigManager.loadAllConfigs();
-                res.json({ success: true, message: 'Configurations reloaded' });
-            } catch (error) {
-                console.error('Config reload error:', error);
-                res.status(500).json({
-                    success: false,
-                    error: error.message
-                });
-            }
+        const portkeyConfig = await PortkeyConfigGenerator.generateConfig(
+            userContext,
+            virtualKeyConfig || {},
+            requestBody || {},  // 🎯 确保 requestBody 不为 undefined
+        );
+
+        res.json({
+            success: true,
+            config: portkeyConfig,
+            generated_at: new Date().toISOString(),
         });
-
-        // 健康检查
-        this.app.get('/health', async (req, res) => {
-            const redisHealth = await RedisService.healthCheck();
-
-            res.json({
-                status: 'ok',
-                service: 'neuropia_config_service',
-                redis: redisHealth ? 'connected' : 'disconnected',
-                timestamp: new Date().toISOString()
-            });
+    } catch (error) {
+        console.error("❌ Generate config error:", error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
         });
-
-        // 获取模型列表
-        this.app.get('/models', async (req, res) => {
-            try {
-                const models = await PortkeyConfigGenerator.loadAllModelConfigs();
-                res.json({ success: true, data: models });
-            } catch (error) {
-                console.error('Get models error:', error);
-                res.status(500).json({
-                    success: false,
-                    error: error.message
-                });
-            }
-        });
-
-        // 404 处理
-        this.app.use('*', (req, res) => {
-            res.status(404).json({
-                error: 'Route not found',
-                code: 'ROUTE_NOT_FOUND'
-            });
-        });
-
-        // 全局错误处理
-        this.app.use((err, req, res, next) => {
-            console.error('Unhandled error:', err);
-            res.status(500).json({
-                error: 'Internal server error',
-                code: 'INTERNAL_ERROR'
-            });
-        });
-    }
-
-    async start(port = 3002) {
-        try {
-            // 异步初始化
-            await this.initialize();
-
-            this.server = this.app.listen(port, () => {
-                console.log(`Neuropia Config Service running on port ${port}`);
-            });
-
-            // 优雅关闭处理
-            this.setupGracefulShutdown();
-
-            return this.server;
-        } catch (error) {
-            console.error('Failed to start Neuropia Config Service:', error);
-            process.exit(1);
-        }
-    }
-
-    setupGracefulShutdown() {
-        const gracefulShutdown = async (signal) => {
-            console.log(`Received ${signal}, shutting down Config Service gracefully...`);
-
-            // 关闭 HTTP 服务器
-            if (this.server) {
-                this.server.close(() => {
-                    console.log('Config Service HTTP server closed');
-                });
-            }
-
-            // 关闭 Redis 连接
-            if (RedisService.client) {
-                await RedisService.client.quit();
-                console.log('Config Service Redis connection closed');
-            }
-
-            process.exit(0);
-        };
-
-        process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-        process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     }
 }
 
-module.exports = NeuropiaConfigService;
+  /**
+   * 清理缓存
+   */
+  async handleClearCache(req, res) {
+    try {
+      const { virtual_key, tier_name } = req.body;
+
+      if (virtual_key) {
+        const pattern = `portkey_config:*:${virtual_key}:*`;
+        const keys = await RedisService.keys(pattern);
+        if (keys.length > 0) {
+          await RedisService.del(...keys);
+        }
+        console.log(`🧹 Cleared caches for virtual_key: ${virtual_key}`);
+      } else if (tier_name) {
+        const pattern = `portkey_config:*:*:${tier_name}:*`;
+        const keys = await RedisService.keys(pattern);
+        if (keys.length > 0) {
+          await RedisService.del(...keys);
+        }
+        console.log(`🍰 Cleared caches for tier: ${tier_name}`);
+      } else {
+        await this.clearAllCache();
+      }
+
+      res.json({
+        success: true,
+        message: "Cache cleared successfully",
+      });
+    } catch (error) {
+      console.error("❌ Clear cache error:", error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  }
+
+  /**
+   * 清理所有缓存
+   */
+  async clearAllCache() {
+    const portkeyKeys = await RedisService.keys("portkey_config:*");
+    const configResolutionKeys = await RedisService.keys("config_resolution:*");
+    const allKeys = [...portkeyKeys, ...configResolutionKeys];
+
+    if (allKeys.length > 0) {
+      await RedisService.del(...allKeys);
+      console.log(`🌍 Cleared all ${allKeys.length} caches`);
+    }
+  }
+
+  /**
+   * 启动服务
+   */
+  async start(port = 3001) {
+    try {
+      // 🎯 先连接 Redis
+      await RedisService.connect();
+
+      // 连接监听器
+      await pgListener.connect();
+
+      this.server = this.app.listen(port, () => {
+        console.log(`🎯 Config Service running on port ${port}`);
+        console.log(`📊 Endpoints:`);
+        console.log(`   POST /generate-config`);
+        console.log(`   POST /clear-cache`);
+        console.log(`📢 Listening to PostgreSQL channels: config_updates`);
+      });
+    } catch (error) {
+      console.error("❌ Failed to start Config Service:", error);
+      throw error;
+    }
+  }
+
+  async stop() {
+    if (this.server) {
+      this.server.close();
+      await pgListener.disconnect();
+      console.log("Config Service stopped");
+    }
+  }
+}
+
+module.exports = ConfigServiceApp;

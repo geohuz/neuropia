@@ -1,62 +1,64 @@
-// src/services/configManager.js
-const { RedisService } = require('./redisService');
-const postgrestClient = require('../clients/postgrest');
+// neuropia_config_service/src/services/configManager.js
+const postgrestClient = require('@shared/clients/postgrest');
 
 class ConfigManager {
-    static async loadAllConfigs() {
-        try {
-            // 加载虚拟密钥
-            const virtualKeys = await postgrestClient.get('/virtual_key_details');
-            for (const vk of virtualKeys) {
-                await RedisService.cacheVirtualKey(vk.virtual_key, vk);
-            }
+  static async loadAllConfigs() {
+    try {
+      // 修复：使用正确的 postgrest-js API
+      const virtualKeys = await postgrestClient
+        .from('virtual_key_details')
+        .select('*')
+        .eq('is_active', true);
 
-            // 加载 Portkey 配置
-            const configs = await postgrestClient.get('/active_portkey_configs');
-            for (const config of configs) {
-                const cacheKey = `portkey_config:${config.id}`;
-                await RedisService.cachePortkeyConfig(cacheKey, config);
-            }
+      // 修复：处理响应格式
+      for (const vk of virtualKeys.data) {
+        await RedisService.cacheVirtualKey(vk.virtual_key, {
+          user_id: vk.user_id,
+          virtual_key_id: vk.id,
+          rate_limits: {
+            rpm: vk.rate_limit_rpm,
+            tpm: vk.rate_limit_tpm,
+          },
+          allowed_models: vk.allowed_models || [],
+          key_type_id: vk.key_type_id,
+          key_prefix: vk.key_prefix,
+        });
+      }
 
-            // 加载提供商费率
-            const rates = await postgrestClient.get('/current_provider_rates');
-            await RedisService.cacheProviderRates(rates);
+      // 修复：使用正确的 API 获取配置
+      const configs = await postgrestClient
+        .from('active_portkey_configs')
+        .select('*');
 
-            console.log('All configurations loaded to Redis');
-        } catch (error) {
-            console.error('Failed to load configurations:', error);
-            throw error;
-        }
+      for (const config of configs.data) {
+        const cacheKey = `portkey_config:${config.id}`;
+        await RedisService.cachePortkeyConfig(cacheKey, config.config_json);
+      }
+
+      console.log(
+        `Loaded ${virtualKeys.data.length} virtual keys and ${configs.data.length} portkey configs`,
+      );
+    } catch (error) {
+      console.error("Failed to load configurations:", error);
+      throw error;
     }
+  }
 
-    static async getPortkeyConfigForUser(userId) {
-        try {
-            // 从数据库获取用户配置
-            const response = await postgrestClient.post('/rpc/get_active_portkey_config', {
-                p_tenant_id: null, // 从用户上下文获取
-                p_user_id: userId
-            });
+  static async getPortkeyConfigForUser(userId, tenantId) {
+    try {
+      // 修复：使用正确的 RPC 调用方式
+      const response = await postgrestClient
+        .rpc('get_active_portkey_config', {
+          p_tenant_id: tenantId,
+          p_user_id: userId,
+        });
 
-            return response.data;
-        } catch (error) {
-            console.error('Failed to get portkey config:', error);
-            throw error;
-        }
+      return response.data;
+    } catch (error) {
+      console.error("Failed to get portkey config:", error);
+      throw error;
     }
-
-    static async handleConfigUpdate(configId) {
-        try {
-            // 重新加载特定配置
-            const config = await postgrestClient.get(`/portkey_configs_view?id=eq.${configId}`);
-            if (config && config.length > 0) {
-                const cacheKey = `portkey_config:${configId}`;
-                await RedisService.cachePortkeyConfig(cacheKey, config[0]);
-                console.log(`Config ${configId} updated in Redis`);
-            }
-        } catch (error) {
-            console.error('Failed to update config:', error);
-        }
-    }
+  }
 }
 
 module.exports = { ConfigManager };

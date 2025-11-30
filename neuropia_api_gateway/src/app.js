@@ -1,131 +1,193 @@
 // neuropia_api_gateway/src/app.js
-const express = require('express');
-const cors = require('cors');
-// const helmet = require('helmet'); // 暂时注释掉以简化
-const { AuthMiddleware } = require('./middleware/auth');
-const { VirtualKeyMiddleware } = require('./middleware/virtualKey');
-const chatRoutes = require('./routes/chat');
-const configRoutes = require('./routes/config');
-const userRoutes = require('./routes/users');
-const { RedisService } = require('./services/redisService');
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
-class NeuropiaGateway {
-    constructor() {
-        this.app = express();
-        // 不在构造函数中初始化，改为在 start() 方法中异步初始化
-    }
+// 中间件
+const { VirtualKeyMiddleware } = require("./middleware/virtualKey");
+const ErrorHandler = require("./middleware/errorHandler");
+const RequestLogger = require("./middleware/requestLogger");
 
-    async initialize() {
-        try {
-            console.log('Initializing Neuropia API Gateway...');
+// 路由
+const proxyRoutes = require("./routes/proxy");
 
-            // 1. 先连接 Redis
-            await RedisService.connect();
-            console.log('Redis connected successfully');
+// 服务
+const RedisService = require("@shared/clients/redis_op");
+const configCacheManager = require("./services/configCacheManager");
 
-            // 2. 设置中间件
-            this.setupMiddleware();
+let server = null;
+let initialized = false;
 
-            // 3. 设置路由
-            this.setupRoutes();
+async function initialize() {
+    if (initialized) return;
 
-            console.log('Neuropia API Gateway initialized successfully');
-        } catch (error) {
-            console.error('Initialization failed:', error);
-            throw error;
-        }
-    }
+    try {
+        console.log("🚀 Initializing Neuropia API Gateway...");
 
-    setupMiddleware() {
-        // this.app.use(helmet()); // 暂时注释掉
-        this.app.use(cors());
-        this.app.use(express.json());
+        // 1. 连接 Redis
+        await RedisService.connect();
+        console.log("✅ Redis connected successfully");
 
-        // 全局认证中间件（健康检查除外）
-        this.app.use(AuthMiddleware.authenticate);
-    }
+        // 2. 初始化配置缓存管理器
+        await configCacheManager.initialize()
+        console.log("✅ configCacheManager initialized");
 
-    setupRoutes() {
-        // 只有聊天路由需要 Virtual Key 验证
-        this.app.use('/api/chat', VirtualKeyMiddleware.validate, chatRoutes);
-
-        // 配置和用户路由只需要认证，不需要 Virtual Key
-        this.app.use('/api/config', configRoutes);
-        this.app.use('/api/users', userRoutes);
-
-        // 健康检查 - 完全公开（包含 Redis 状态）
-        this.app.get('/health', async (req, res) => {
-            const redisHealth = await RedisService.healthCheck();
-
-            res.json({
-                status: 'ok',
-                service: 'neuropia_api_gateway',
-                redis: redisHealth ? 'connected' : 'disconnected',
-                timestamp: new Date().toISOString()
-            });
-        });
-
-        // 404 处理
-        this.app.use('*', (req, res) => {
-            res.status(404).json({
-                error: 'Route not found',
-                code: 'ROUTE_NOT_FOUND'
-            });
-        });
-
-        // 全局错误处理
-        this.app.use((err, req, res, next) => {
-            console.error('Unhandled error:', err);
-            res.status(500).json({
-                error: 'Internal server error',
-                code: 'INTERNAL_ERROR'
-            });
-        });
-    }
-
-    async start(port = 3001) {
-        try {
-            // 异步初始化
-            await this.initialize();
-
-            this.server = this.app.listen(port, () => {
-                console.log(`Neuropia API Gateway running on port ${port}`);
-            });
-
-            // 优雅关闭处理
-            this.setupGracefulShutdown();
-
-            return this.server;
-        } catch (error) {
-            console.error('Failed to start Neuropia API Gateway:', error);
-            process.exit(1);
-        }
-    }
-
-    setupGracefulShutdown() {
-        const gracefulShutdown = async (signal) => {
-            console.log(`Received ${signal}, shutting down gracefully...`);
-
-            // 关闭 HTTP 服务器
-            if (this.server) {
-                this.server.close(() => {
-                    console.log('HTTP server closed');
-                });
-            }
-
-            // 关闭 Redis 连接
-            if (RedisService.client) {
-                await RedisService.client.quit();
-                console.log('Redis connection closed');
-            }
-
-            process.exit(0);
-        };
-
-        // 注册信号处理
-        process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-        process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+        initialized = true;
+        console.log("Neuropia API Gateway initialized successfully");
+    } catch (error) {
+        console.error("❌ Initialization failed:", error);
+        throw error;
     }
 }
 
-module.exports = NeuropiaGateway;
+function setupMiddleware(app) {
+    // 健康检查 - 公开访问
+    app.get("/health", healthCheck);
+
+    // 安全中间件
+    app.use(helmet());
+    app.use(cors({
+        origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+        credentials: true
+    }));
+
+    // 请求解析
+    app.use(express.json({ limit: '10mb' }));
+    app.use(express.urlencoded({ extended: true }));
+
+    // 请求日志
+    app.use(RequestLogger);
+
+    // 全局速率限制
+    const globalLimiter = rateLimit({
+        windowMs: 1 * 60 * 1000, // 1分钟
+        max: 100, // 最多100个请求
+        message: {
+            error: "Too many requests, please try again later.",
+            code: "RATE_LIMIT_EXCEEDED"
+        },
+        standardHeaders: true,
+        legacyHeaders: false
+    });
+    app.use(globalLimiter);
+
+}
+
+function setupRoutes(app) {
+    // API 路由
+    app.use("/v1", VirtualKeyMiddleware.validate, proxyRoutes);
+
+    // 404 处理
+    app.use("*", handleNotFound);
+}
+
+function setupErrorHandling(app) {
+    app.use(ErrorHandler);
+}
+
+async function healthCheck(req, res) {
+    const startTime = Date.now();
+
+    try {
+        // 使用独立连接，避免单例客户端的问题
+        const { createClient } = require("redis");
+        const healthClient = createClient({
+            url: process.env.REDIS_URL || "redis://localhost:6379",
+        });
+
+        await healthClient.connect();
+        const pingStart = Date.now();
+        const result = await healthClient.ping();
+        const pingTime = Date.now() - pingStart;
+        await healthClient.disconnect();
+
+        const totalTime = Date.now() - startTime;
+
+        res.status(200).json({
+            status: 'healthy',
+            response_time: totalTime,
+            redis_ping_time: pingTime,
+            note: "Used dedicated Redis connection"
+        });
+
+    } catch (error) {
+        const totalTime = Date.now() - startTime;
+        res.status(200).json({
+            status: 'degraded',
+            response_time: totalTime,
+            error: error.message
+        });
+    }
+}
+
+function handleNotFound(req, res) {
+    res.status(404).json({
+        error: "Route not found",
+        code: "ROUTE_NOT_FOUND",
+        path: req.originalUrl
+    });
+}
+
+function setupGracefulShutdown() {
+    const gracefulShutdown = async (signal) => {
+        console.log(`\n Received ${signal}, shutting down gracefully...`);
+
+        if (server) {
+            server.close(() => {
+                console.log("HTTP server closed");
+            });
+        }
+
+        // 只关闭确实存在的服务
+        await Promise.allSettled([
+            configCacheManager.stop().then(() => console.log("configCacheManager shutdown")),
+            RedisService.disconnect().then(() => console.log("Redis disconnected"))
+        ]);
+
+        console.log("Graceful shutdown completed");
+        process.exit(0);
+    };
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+}
+
+async function stop() {
+    if (server) {
+        server.close();
+    }
+    await configCacheManager.stop();
+    await RedisService.disconnect();
+}
+
+async function start(port = process.env.PORT || 3001) {
+    try {
+        await initialize();
+
+        const app = express();
+
+        setupMiddleware(app);
+        setupRoutes(app);
+        setupErrorHandling(app);
+
+        server = app.listen(port, () => {
+            console.log(`Neuropia API Gateway running on port ${port}`);
+            console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+            console.log(`Health check: http://localhost:${port}/health`);
+        });
+
+        setupGracefulShutdown();
+        return server;
+    } catch (error) {
+        console.error("💥 Failed to start Neuropia API Gateway:", error);
+        throw error;
+    }
+}
+
+module.exports = {
+    start,
+    stop,
+    healthCheck,
+    handleNotFound
+};

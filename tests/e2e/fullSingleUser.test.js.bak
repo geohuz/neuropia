@@ -1,0 +1,228 @@
+// tests/e2e/fullSingleUser.test.js
+const request = require("supertest");
+const startApiGateway = require("../../neuropia_api_gateway/src/server");
+const RedisService = require("../../neuropia_api_gateway/src/services/redisService");
+
+describe("Neuropia Platform Complete E2E Workflow", () => {
+  let gatewayServer;
+  let adminToken;
+  let userToken;
+  let virtualKey;
+  let userId;
+
+  let postgrestClient;
+  let gatewayTester;
+
+  beforeAll(async () => {
+    try {
+      console.log("🚀 Starting Complete End-to-End Test...");
+
+      // 启动 API 网关
+      gatewayServer = await startApiGateway();
+      gatewayTester = request(gatewayServer);
+
+      // 连接 Redis
+      await RedisService.connect();
+
+      postgrestClient = request("http://localhost:3000");
+
+      // 1. 管理员登录
+      const adminLogin = await postgrestClient.post("/rpc/login").send({
+        email: "api@neuropia",
+        pass: "api",
+      });
+
+      console.log("🔍 Admin login:", {
+        status: adminLogin.status,
+        body: adminLogin.body,
+      });
+
+      adminToken = adminLogin.body.token;
+      console.log("✅ System admin login successful");
+
+      // 2. 注册新用户（独立用户）
+      const registerResponse = await postgrestClient
+        .post("/rpc/register_user")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({
+          p_email: "e2e-test-user@neuropia.com",
+          p_username: "e2etestuser",
+          p_password: "testpass123",
+          p_role: "norm_user",
+          p_tenant_id: null,
+        });
+
+      console.log("🔍 User registration:", {
+        status: registerResponse.status,
+        body: registerResponse.body,
+      });
+
+      userId = registerResponse.body;
+      console.log("✅ User registered, ID:", userId);
+
+      // 3. 用户登录
+      const userLogin = await postgrestClient.post("/rpc/login").send({
+        email: "e2e-test-user@neuropia.com",
+        pass: "testpass123",
+      });
+
+      userToken = userLogin.body.token;
+      console.log("✅ User login successful");
+
+      // 等待服务启动
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    } catch (error) {
+      console.error("❌ beforeAll failed:", error);
+      throw error;
+    }
+  });
+
+  afterAll(async () => {
+    if (gatewayServer) gatewayServer.close();
+    if (RedisService.client) await RedisService.client.quit();
+  });
+
+  test("Complete user lifecycle and AI call workflow", async () => {
+    console.log("📝 Testing complete workflow...");
+
+    // 4. 检查用户访问权限（使用管理员token）
+    const accessCheck = await postgrestClient
+      .post("/rpc/check_user_access")
+      .set("Authorization", `Bearer ${adminToken}`) // 使用 adminToken 而不是 userToken
+      .send({ p_user_id: userId });
+
+    console.log("🔍 Initial access check:", {
+      status: accessCheck.status,
+      body: accessCheck.body,
+    });
+
+    expect(accessCheck.status).toBe(200);
+    expect(accessCheck.body[0].user_status).toBe("pending");
+    expect(accessCheck.body[0].can_use_api).toBe(false);
+    console.log("✅ Initial pending status verified");
+
+    // 5. 用户充值（使用管理员token）
+    const topupResponse = await postgrestClient
+      .post("/rpc/topup_user")
+      .set("Authorization", `Bearer ${adminToken}`) // 使用 adminToken
+      .send({
+        p_user_id: userId,
+        p_amount: 100,
+        p_payment_reference: "test_ref_001",
+        p_payment_provider: "test_provider",
+      });
+
+    console.log("🔍 Topup response:", {
+      status: topupResponse.status,
+      body: topupResponse.body,
+    });
+
+    expect(topupResponse.status).toBe(200);
+    const topupId = topupResponse.body;
+    console.log(`✅ Topup created: ${topupId}`);
+
+    // 6. 确认充值
+    const confirmResponse = await postgrestClient
+      .post("/rpc/confirm_topup")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ p_topup_id: topupId });
+
+    expect(confirmResponse.status).toBe(204);
+    console.log("✅ Topup confirmed");
+
+    // 7. 再次检查用户状态（应该是 active）
+    const accessCheck2 = await postgrestClient
+      .post("/rpc/check_user_access")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ p_user_id: userId });
+
+    console.log("🔍 Activated access check:", accessCheck2.body);
+    expect(accessCheck2.status).toBe(200);
+    expect(accessCheck2.body[0].user_status).toBe("active");
+    expect(accessCheck2.body[0].can_use_api).toBe(true);
+    console.log("✅ User activated");
+
+    // 8. 创建虚拟密钥（使用用户自己的token）
+    const vkResponse = await postgrestClient
+      .post("/rpc/create_virtual_key")
+      .set("Authorization", `Bearer ${userToken}`) // 使用 userToken
+      .send({
+        p_user_id: userId,
+        p_name: "E2E Test Virtual Key",
+        p_description: "For end-to-end testing",
+        p_rate_limit_rpm: 1000,
+        p_rate_limit_tpm: 100000,
+        p_allowed_models: ["qwen-turbo", "gpt-3.5-turbo"],
+      });
+
+    console.log("🔍 Virtual Key creation:", {
+      status: vkResponse.status,
+      body: vkResponse.body,
+    });
+
+    expect(vkResponse.status).toBe(200);
+    virtualKey = vkResponse.body;
+    console.log(`✅ Virtual Key created: ${virtualKey}`);
+
+    // 9. 验证 Virtual Key 配置缓存
+    const vkConfig = await RedisService.getVirtualKey(virtualKey);
+    console.log("🔍 Virtual Key config from Redis:", vkConfig);
+    expect(vkConfig).toBeDefined();
+    expect(vkConfig.user_id).toBe(userId);
+    console.log("✅ Virtual Key cached in Redis");
+
+    // 10. 通过业务网关调用 AI 服务
+    const aiResponse = await gatewayTester
+      .post("/api/chat/completions")
+      .set("x-virtual-key", virtualKey)
+      .send({
+        model: "qwen-turbo",
+        messages: [{ role: "user", content: "Hello, world!" }],
+        max_tokens: 100,
+      });
+
+    console.log("🔍 AI API response:", {
+      status: aiResponse.status,
+      body: aiResponse.body,
+    });
+
+    expect([200, 429]).toContain(aiResponse.status); // 200成功或429限流
+    console.log("✅ AI API call completed");
+
+    console.log("🎉 Complete workflow test finished!");
+  }, 30000);
+
+  test("Virtual key validation and rate limiting", async () => {
+    console.log("🧪 Testing error scenarios...");
+
+    // 确保 virtualKey 已定义
+    if (!virtualKey) {
+      console.log("⚠️ virtualKey not defined, skipping test");
+      return;
+    }
+
+    // 测试无效虚拟密钥
+    const invalidResponse = await gatewayTester
+      .post("/api/chat/completions")
+      .set("x-virtual-key", "invalid_key_123")
+      .send({
+        model: "qwen-turbo",
+        messages: [{ role: "user", content: "Test" }],
+      });
+
+    expect(invalidResponse.status).toBe(401);
+    console.log("✅ Invalid virtual key rejected");
+
+    // 测试模型权限
+    const wrongModelResponse = await gatewayTester
+      .post("/api/chat/completions")
+      .set("x-virtual-key", virtualKey)
+      .send({
+        model: "claude-2", // 不在允许列表中
+        messages: [{ role: "user", content: "Test" }],
+      });
+
+    expect(wrongModelResponse.status).toBe(403);
+    console.log("✅ Model restriction enforced");
+  });
+});

@@ -1,0 +1,199 @@
+// tests/e2e/completeWorkflow.test.js
+const request = require("supertest");
+const startApiGateway = require("../../neuropia_api_gateway/src/server");
+const RedisService = require("../../neuropia_api_gateway/src/services/redisService");
+const TestData = require("../fixtures/testData");
+
+describe("Neuropia Platform Complete E2E Workflow", () => {
+  let gatewayServer;
+  let adminToken;
+  let userToken;
+  let tenantAdminToken;
+  let virtualKey;
+  let userId;
+
+  let postgrestClient;
+  let gatewayTester;
+
+  // 在 completeWorkflow.test.js 的 beforeAll 中添加错误处理
+  beforeAll(async () => {
+    try {
+      console.log("🚀 Starting Complete End-to-End Test...");
+      await TestData.initialize();
+
+      postgrestClient = request("http://localhost:3000");
+
+      // 获取系统管理员token
+      const sysAdminLogin = await postgrestClient.post("/rpc/login").send({
+        email: TestData.sysAdmin.email,
+        pass: TestData.sysAdmin.pass,
+      });
+
+      console.log("🔍 Login response:", {
+        status: sysAdminLogin.status,
+        body: sysAdminLogin.body,
+      });
+
+      if (sysAdminLogin.status !== 200) {
+        console.error("❌ Login failed - full response:", {
+          status: sysAdminLogin.status,
+          headers: sysAdminLogin.headers,
+          body: sysAdminLogin.body,
+          text: sysAdminLogin.text,
+        });
+        throw new Error(`Login failed with status ${sysAdminLogin.status}`);
+      }
+
+      adminToken = sysAdminLogin.body.token;
+      console.log("✅ System admin login successful");
+
+      // 获取普通用户token并设置userId
+      const userLogin = await postgrestClient.post("/rpc/login").send({
+        email: TestData.individualUser.email,
+        pass: TestData.individualUser.password,
+      });
+
+      userToken = userLogin.body.token;
+      userId = TestData.individualUser.id; // 🚨 这里！设置userId
+      console.log("✅ Individual user login successful, userId:", userId);
+
+      // 启动 API 网关
+      gatewayServer = await startApiGateway();
+      gatewayTester = request(gatewayServer);
+
+      // 连接 Redis
+      await RedisService.connect();
+
+      // 等待服务启动
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // 其他初始化代码...
+    } catch (error) {
+      console.error("❌ beforeAll failed:", error);
+      console.error("❌ Error stack:", error.stack);
+      throw error;
+    }
+  });
+
+  afterAll(async () => {
+    if (gatewayServer) gatewayServer.close();
+    if (RedisService.client) await RedisService.client.quit();
+    await TestData.cleanup();
+  });
+
+  test("1. User lifecycle workflow", async () => {
+    console.log("📝 Testing user lifecycle...");
+    console.log("adminToken", adminToken);
+
+    // 检查初始状态
+    console.log("user_id..................", userId);
+    const accessCheck = await postgrestClient
+      .post("/rpc/check_user_access")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ p_user_id: userId });
+
+    console.log("accessCheck", accessCheck.body);
+
+    expect(accessCheck.status).toBe(200);
+    expect(accessCheck.body[0].user_status).toBe("pending");
+
+    // 用户充值流程
+    const topupResponse = await postgrestClient
+      .post("/rpc/topup_user")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        p_user_id: userId,
+        p_amount: 100,
+        p_payment_reference: "test_ref_001",
+        p_payment_provider: "test_provider",
+      });
+
+    expect(topupResponse.status).toBe(200);
+    const topupId = topupResponse.body;
+
+    // 确认充值
+    const confirmResponse = await postgrestClient
+      .post("/rpc/confirm_topup")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ p_topup_id: topupId });
+
+    expect(confirmResponse.status).toBe(204);
+
+    // 检查激活状态
+    const accessCheck2 = await postgrestClient
+      .post("/rpc/check_user_access")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ p_user_id: userId });
+
+    expect(accessCheck2.body[0].user_status).toBe("active");
+    console.log("✅ User lifecycle completed");
+  });
+
+  test("2. Virtual Key lifecycle", async () => {
+    console.log("🔑 Testing Virtual Key lifecycle...");
+
+    // 创建 Virtual Key
+    const vkResponse = await postgrestClient
+      .post("/rpc/create_virtual_key")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        p_user_id: userId,
+        p_name: "E2E Test Virtual Key",
+        p_description: "For end-to-end testing",
+        p_rate_limit_rpm: 1000,
+        p_rate_limit_tpm: 100000,
+        p_allowed_models: ["qwen-turbo", "gpt-3.5-turbo"],
+      });
+
+    expect(vkResponse.status).toBe(200);
+    virtualKey = vkResponse.body;
+    console.log(`✅ Virtual Key created: ${virtualKey}`);
+
+    // 验证 Virtual Key 配置
+    const vkConfig = await RedisService.getVirtualKey(virtualKey);
+    expect(vkConfig).toBeDefined();
+    expect(vkConfig.user_id).toBe(userId);
+
+    // Virtual Key 轮转
+    const rotateResponse = await postgrestClient
+      .post("/rpc/rotate_virtual_key")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({
+        p_old_virtual_key: virtualKey,
+        p_reason: "test_rotation",
+      });
+
+    expect(rotateResponse.status).toBe(200);
+    const newVirtualKey = rotateResponse.body;
+    expect(newVirtualKey).toMatch(/^vk_/);
+    console.log("✅ Virtual Key rotation completed");
+  });
+
+  test("3. API Gateway integration", async () => {
+    console.log("🌐 Testing API Gateway...");
+
+    // 测试无效 Virtual Key
+    const invalidResponse = await gatewayTester
+      .post("/api/chat/completions")
+      .set("x-virtual-key", "invalid_key_123")
+      .send({
+        model: "qwen-turbo",
+        messages: [{ role: "user", content: "Test" }],
+      });
+
+    expect(invalidResponse.status).toBe(401);
+    console.log("✅ Invalid virtual key rejected");
+
+    // 测试有效 Virtual Key（需要先创建）
+    const validResponse = await gatewayTester
+      .post("/api/chat/completions")
+      .set("x-virtual-key", virtualKey)
+      .send({
+        model: "qwen-turbo",
+        messages: [{ role: "user", content: "Hello" }],
+      });
+
+    expect([200, 429]).toContain(validResponse.status);
+    console.log("✅ API Gateway integration completed");
+  });
+});

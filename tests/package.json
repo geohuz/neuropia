@@ -1,0 +1,17 @@
+{
+  "name": "tests",
+  "version": "1.0.0",
+  "description": "Neuropia AI Platform - tests",
+  "jest": {
+    "testEnvironment": "node"
+  },
+  "keywords": [
+    "configuration",
+    "management",
+    "redis",
+    "postgresql",
+    "neuropia"
+  ],
+  "author": "Neuropia Team",
+  "license": "MIT"
+}

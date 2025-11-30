@@ -382,3 +382,137 @@ PORTKEY_API_KEY=your_portkey_key
 - `portkeyConfigGenerator.js` - Portkey配置生成
 - `data.model_configs` - 模型提供商映射
 - `routes/chat.js` - AI请求处理
+
+您说得对！`create_virtual_key` 已经有完整的通知机制了。让我更新总结表格：
+
+# Virtual Key & Config 相关数据库函数总结
+
+## 📋 函数总览表
+
+### **Virtual Key 管理函数**（全部完整）
+
+| 函数名称                 | 参数                                                         | 返回值                   | 通知通道             | 描述                      | 状态       |
+| ------------------------ | ------------------------------------------------------------ | ------------------------ | -------------------- | ------------------------- | ---------- |
+| `create_virtual_key`     | `p_user_id, p_name, p_description, p_rate_limit_rpm, p_rate_limit_tpm, p_allowed_models, p_key_type_id, p_key_prefix` | `text` (virtual_key)     | `virtual_key_update` | 创建新的Virtual Key       | ✅ **完整** |
+| `update_virtual_key`     | `p_virtual_key, p_name, p_description, p_rate_limit_rpm, p_rate_limit_tpm, p_allowed_models, p_key_type_id, p_key_prefix, p_is_active` | `void`                   | `virtual_key_update` | 更新Virtual Key配置       | ✅ **完整** |
+| `deactivate_virtual_key` | `p_virtual_key, p_reason`                                    | `void`                   | `virtual_key_update` | 停用Virtual Key           | ✅ **完整** |
+| `activate_virtual_key`   | `p_virtual_key, p_reason`                                    | `void`                   | `virtual_key_update` | 重新激活Virtual Key       | ✅ **完整** |
+| `rotate_virtual_key`     | `p_old_virtual_key, p_reason`                                | `text` (new_virtual_key) | `virtual_key_update` | 轮换密钥（停用旧+创建新） | ✅ **完整** |
+
+### **Portkey 配置管理函数**（全部完整）
+
+| 函数名称                    | 参数                                                         | 返回值             | 通知通道        | 描述                  | 状态       |
+| --------------------------- | ------------------------------------------------------------ | ------------------ | --------------- | --------------------- | ---------- |
+| `create_portkey_config`     | `p_tenant_id, p_user_id, p_config_name, p_config_json, p_effective_from, p_notes, p_created_by` | `uuid` (config_id) | `config_update` | 创建Portkey配置       | ✅ **完整** |
+| `update_portkey_config`     | `p_id, p_config_json, p_effective_from, p_notes, p_updated_by` | `uuid` (config_id) | `config_update` | 更新Portkey配置       | ✅ **完整** |
+| `deactivate_portkey_config` | `p_id, p_reason, p_deactivated_by`                           | `void`             | `config_update` | 停用Portkey配置       | ✅ **完整** |
+| `activate_portkey_config`   | `p_id, p_reason, p_activated_by`                             | `void`             | `config_update` | 激活Portkey配置       | ✅ **完整** |
+| `get_active_portkey_config` | `p_tenant_id, p_user_id`                                     | `jsonb`            | 无              | 获取生效的Portkey配置 | ✅ 查询函数 |
+
+## 🎯 Service 代码检查要点
+
+### **Config Service 必须实现：**
+
+```javascript
+// 监听通道
+const CHANNELS = ['config_update', 'virtual_key_update'];
+
+// 处理 virtual_key_update 通知
+const handleVirtualKeyUpdate = (payload) => {
+  const cacheKey = `virtual_key:${payload.virtual_key}`;
+  
+  switch(payload.action) {
+    case 'create':
+    case 'update': 
+    case 'activate':
+      // 创建/更新/激活：设置缓存
+      redis.set(cacheKey, JSON.stringify({
+        user_id: payload.user_id,
+        virtual_key_id: payload.virtual_key_id,
+        rate_limits: payload.rate_limits,
+        allowed_models: payload.allowed_models,
+        key_type_id: payload.key_type_id,
+        key_prefix: payload.key_prefix
+      }));
+      break;
+      
+    case 'deactivate':
+      // 停用：删除缓存
+      redis.del(cacheKey);
+      break;
+  }
+};
+
+// 处理 config_update 通知  
+const handleConfigUpdate = (payload) => {
+  const cacheKey = `portkey_config:${payload.config_id}`;
+  
+  switch(payload.action) {
+    case 'create':
+    case 'update':
+    case 'activate':
+      // 设置配置缓存
+      redis.set(cacheKey, JSON.stringify(payload.config_json));
+      break;
+      
+    case 'deactivate':
+      // 删除配置缓存
+      redis.del(cacheKey);
+      break;
+  }
+};
+```
+
+### **API Gateway 依赖的缓存数据：**
+
+1. **Virtual Key 验证**：
+   ```javascript
+   // 检查 virtual_key:{virtual_key} 缓存
+   const keyConfig = await redis.get(`virtual_key:${virtualKey}`);
+   if (!keyConfig) {
+     // 缓存未命中，可能密钥不存在或已停用
+     throw new Error('Invalid virtual key');
+   }
+   ```
+
+2. **Portkey 配置获取**：
+   ```javascript
+   // 获取 portkey_config:{config_id} 缓存
+   const portkeyConfig = await redis.get(`portkey_config:${configId}`);
+   ```
+
+## ✅ 状态总结
+
+**所有关键函数都已完备：**
+
+- ✅ **5个 Virtual Key 管理函数** - 完整的增删改查+轮换
+- ✅ **4个 Portkey 配置管理函数** - 完整的生命周期管理  
+- ✅ **全部包含实时通知机制** - 确保缓存一致性
+- ✅ **通知payload完整** - 包含所有必要字段
+
+Config Service 现在只需要实现上述监听逻辑，就能保证系统的实时配置同步。
+
+# 服务端代码使用postgresql客户端规范
+
+何时选择 @supabase/postgrest-js：
+
+操作主要是对数据表进行 CRUD（增删改查）。
+
+需要通过 URL 参数进行过滤、分页、排序等操作。
+
+调用的数据库函数比较简单，可以通过 /rpc 端点方便地调用。
+
+希望快速开发，避免手动编写大量数据访问层代码。
+
+何时选择 pg：
+
+你需要执行复杂的多表关联查询或使用 PostgreSQL 特有的高级功能（如特定窗口函数）。
+
+你的操作必须在数据库事务中完成，以确保数据一致性。
+
+你需要更精细地控制数据库连接池。
+
+你追求极致的性能和高吞吐量，希望减少网络开销。
+
+混用策略：
+在实际项目中，你也可以考虑混合使用。例如，对于项目中绝大部分简单的配置信息查询，使用 @supabase/postgrest-js 来提升开发效率；而对于像初始化缓存、批量更新等需要事务保证的复杂操作，则使用 pg 来完成。
