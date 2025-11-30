@@ -13,7 +13,6 @@ async function getMonitoringStream(streamKey = Redis.schema.STREAMS.API_MONITORI
             ? streamKey
             : Redis.schema.STREAMS.API_MONITORING_STREAM;
 
-        console.log(`🔍 读取监控流: ${actualStreamKey}, 数量: ${count}`);
 
         const messages = await client.xRevRange(actualStreamKey, '+', '-', { COUNT: count });
         messages.reverse(); // 如需时间升序
@@ -22,8 +21,6 @@ async function getMonitoringStream(streamKey = Redis.schema.STREAMS.API_MONITORI
             console.log('📭 监控流为空');
             return [];
         }
-
-        console.log(`✅ 从监控流读取到 ${messages.length} 条记录`);
 
         return messages.map(message => {
             const fields = message.message;
@@ -65,7 +62,8 @@ async function getVirtualKeyStats(virtualKey) {
         }
 
         const client = await Redis.connect();
-        const stats = await client.hGetAll(`usage:${virtualKey}`);
+        const key = Redis.buildKey(Redis.schema.HASHES.VIRTUAL_KEY_USAGE.pattern, { virtual_key: virtualKey });
+        const stats = await client.hGetAll(key)
 
         // 检查是否有数据
         if (Object.keys(stats).length === 0) {
@@ -123,12 +121,10 @@ async function getTopVirtualKeys(limit = 10) {
  */
 async function getCacheStats() {
     try {
-        console.log('🔍 获取缓存统计...');
 
         const records = await getMonitoringStream(Redis.schema.STREAMS.API_MONITORING_STREAM, 100);
 
         if (records.length === 0) {
-            console.log('📭 暂无缓存数据');
             return {
                 total_requests: 0,
                 cache_hits: 0,
@@ -146,8 +142,6 @@ async function getCacheStats() {
             cache_misses: totalRequests - cacheHits,
             hit_rate: totalRequests > 0 ? (cacheHits / totalRequests * 100).toFixed(2) + '%' : '0%'
         };
-
-        console.log(`✅ 缓存统计: ${cacheHits}/${totalRequests} 命中率 ${cacheStats.hit_rate}`);
 
         return cacheStats;
     } catch (error) {
@@ -167,18 +161,9 @@ async function getCacheStats() {
 async function getProviderStats(provider) {
     try {
         const client = await Redis.connect();
-        const key = Redis.schema.HASHES.PROVIDER_STATS.pattern.replace('{provider}', provider); // ✅ 使用 schema
+        const key = Redis.schema.buildKey(Redis.schema.HASHES.PROVIDER_STATS.pattern, { provider });
         const stats = await client.hGetAll(key);
         const date = new Date().toISOString().split('T')[0];
-
-        console.log('🔍 getProviderStats 详细调试:', {
-            provider: provider,
-            key: key,
-            date: date,
-            allFields: Object.keys(stats),
-            dailyRequests: stats[`daily:${date}:requests`],
-            dailyTokens: stats[`daily:${date}:tokens`]
-        });
 
         return {
             provider: provider,
