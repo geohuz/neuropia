@@ -6,9 +6,6 @@ const CACHE_KEYS = require('../constants/cacheKeys');
 
 const DEFAULT_TTL = 300; // 秒
 
-/**
- * pricingCacheManager 提供按 customer_type_id 和 virtual_key 缓存价格表
- */
 class PricingCacheManager {
   constructor() {
     this.pgClient = null;
@@ -56,27 +53,39 @@ class PricingCacheManager {
   /**
    * 内部方法：根据 customer_type 查找依赖的 virtual_key 并失效缓存
    */
-  async _invalidateVirtualKeysByCustomerType(ctId) {
-    const { data: vks, error } = await postgrest.rpc('get_virtual_keys_by_customer_type', {
-      p_customer_type_id: ctId
-    });
-    if (error) {
-      console.error('❌ Failed to get virtual_keys for customer_type_id:', ctId, error);
-      return;
-    }
+   async _invalidateVirtualKeysByCustomerType(ctId) {
+     try {
+       const { data: vks, error } = await postgrest
+         .from('virtual_keys_by_customer_type')
+         .select('virtual_key')
+         .eq('customer_type_id', ctId);
 
-    for (const vkRow of vks) {
-      const vk = vkRow.virtual_key;
-      await invalidateVirtualKeyPricing(vk);
-      console.log(`🧹 Invalidated virtual_key pricing cache: ${vk}`);
-    }
-  }
+       if (error) {
+         console.error('❌ Failed to get virtual_keys for customer_type_id:', ctId, error);
+         return;
+       }
+
+       if (!Array.isArray(vks) || vks.length === 0) {
+         console.log(`ℹ️ No virtual_keys found for customer_type_id: ${ctId}`);
+         return;
+       }
+
+       for (const vkRow of vks) {
+         const vk = vkRow.virtual_key;
+         await invalidateVirtualKeyPricing(vk);
+         console.log(`🧹 Invalidated virtual_key pricing cache: ${vk}`);
+       }
+     } catch (err) {
+       console.error('❌ Unexpected error in _invalidateVirtualKeysByCustomerType:', ctId, err);
+     }
+   }
+
 
   /**
    * 获取 customer_type 价格表
    */
   async get(customerTypeId, ttl = DEFAULT_TTL) {
-    const cacheKey = CACHE_KEYS.PRICE_TABLE_CT(customerTypeId);
+    const cacheKey = CACHE_KEYS.CUSTOMER_TYPE_PRICING(customerTypeId);
 
     const cached = await RedisService.kv.get(cacheKey);
     if (cached) {

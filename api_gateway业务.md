@@ -543,7 +543,7 @@ CREATE TABLE IF NOT EXISTS data.provider_rate
 
 ## sample data
 
-virtual_key
+**virtual_key**
 
 | id                                             | user\_id                                 | virtual\_key                               | config\_data | computed\_config                                             |
 | ---------------------------------------------- | ---------------------------------------- | ------------------------------------------ | ------------ | ------------------------------------------------------------ |
@@ -555,7 +555,7 @@ virtual_key n -> 1 user_profile (george)  customer_type_id -> customer_rate  1 -
 
 data.user_profile:
 
-user_profile:
+**user_profile**:
 
 如果 tenant_id 为null, 则看customer_type_id
 
@@ -565,14 +565,14 @@ user_profile:
 | ---------------------------------------- | -------- | ---------- | ---------------------------------------- |
 | b622afd5\-e542\-48aa\-9f99\-f4aa36fc7d3e | hahah    | *NULL*     | eb948fd1\-b8da\-46c7\-aa51\-92eb296970c8 |
 
-data.customer_type:
+**data.customer_type**:
 
 | id                                       | name       | notes  |
 | ---------------------------------------- | ---------- | ------ |
 | eb948fd1\-b8da\-46c7\-aa51\-92eb296970c8 | business   | *NULL* |
 | b930fcbc\-2c58\-4826\-b81e\-723189bea717 | individual | *NULL* |
 
-data.customer_type_rate:
+**data.customer_type_rate**:
 
 | id                                       | customer\_type\_id                       | price\_per\_token | provider\_rate\_id                       |
 | ---------------------------------------- | ---------------------------------------- | ----------------- | ---------------------------------------- |
@@ -583,14 +583,14 @@ data.customer_type_rate:
 
 按客户类型, 对应不同的provider和model分别计价,  按price_per_token计算
 
-data.provider_rate:
+**data.provider_rate**:
 
 | id                                       | provider  | model      |
 | ---------------------------------------- | --------- | ---------- |
 | bb490ea1\-64e2\-414a\-bfd6\-82bd56ee666c | dashscope | qwen\-pro  |
 | b5fe73a5\-5edb\-4621\-b575\-410e2e680d88 | dashscope | qwen\-plus |
 
-tenant:
+**tenant**:
 
 | id                                       | name  | contact | notes  | created\_at                  | default\_template\_id | customer\_type\_id                       |
 | ---------------------------------------- | ----- | ------- | ------ | ---------------------------- | --------------------- | ---------------------------------------- |
