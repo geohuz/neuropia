@@ -4,7 +4,11 @@ const CACHE_KEYS = {
     VIRTUAL_KEY_CONFIG: (virtualKey) => `vk_config:${virtualKey}`,
 
     // 节点到虚拟 key 的映射
-    NODE_VK_MAPPING: (nodeId) => `node_vk_mapping:${nodeId}`
+    NODE_VK_MAPPING: (nodeId) => `node_vk_mapping:${nodeId}`,
+
+    // pricing
+    VIRTUAL_KEY_PRICING: (vk) => `vk:${vk}:pricing`,
+    CUSTOMER_TYPE_PRICING: (ctId) => `price:ct:${ctId}`,
 };
 
 module.exports = CACHE_KEYS;

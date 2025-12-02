@@ -15,6 +15,7 @@ const proxyRoutes = require("./routes/proxy");
 // 服务
 const RedisService = require("@shared/clients/redis_op");
 const configCacheManager = require("./services/configCacheManager");
+const pricingCacheManager = require("./services/pricingCacheManager");
 
 let server = null;
 let initialized = false;
@@ -32,6 +33,10 @@ async function initialize() {
         // 2. 初始化配置缓存管理器
         await configCacheManager.initialize()
         console.log("✅ configCacheManager initialized");
+        //
+        // 2. 初始化价格缓存管理器
+        await pricingCacheManager.initialize()
+        console.log("✅ pricingCacheManager initialized");
 
         initialized = true;
         console.log("Neuropia API Gateway initialized successfully");

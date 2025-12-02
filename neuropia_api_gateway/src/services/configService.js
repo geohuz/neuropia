@@ -2,6 +2,7 @@
 const postgrest = require('../clients/postgrest');
 const RedisService = require('@shared/clients/redis_op');
 const schemaValidator = require('../validation/schemaValidator');
+const pricingCacheManager = require('./pricingCacheManager');
 const CACHE_KEYS = require('../constants/cacheKeys');
 
 class ConfigService {
@@ -13,14 +14,32 @@ class ConfigService {
       const { virtual_key } = userContext;
       console.log('🔧 获取完整配置:', { virtual_key });
 
+      // ----------------------
+      // 1. 获取 virtual_key 配置
+      // ----------------------
       // 直接获取配置（数据库函数已包含所有验证）
       const computedConfig = await this.getVirtualKeyConfig(virtual_key);
-
       // 验证和补全 metadata
       const validatedConfig = this.validateMetadata(computedConfig);
 
-      console.log('✅ 配置获取完成');
-      return validatedConfig;
+      // ----------------------
+      // 2. 获取价格表
+      // ----------------------
+      const customer_type_id = computedConfig.customer_type_id; // 从 config 或 DB 获取
+      const pricing = await pricingCacheManager.getCustomerTypePricing(
+        customer_type_id,
+        async (ctId) => {
+          const { data, error } = await postgrest.rpc('get_customer_type_pricing', { p_customer_type_id: ctId });
+          if (error) throw error;
+          return data; // { "dashscope:qwen-pro": {...}, ... }
+        }
+      );
+
+      console.log('✅ 配置和价格矩阵获取完成');
+      return {
+        ...validatedConfig,
+        pricing
+      }
     } catch (error) {
       console.error('❌ 配置获取失败:', error.message);
       throw error;
