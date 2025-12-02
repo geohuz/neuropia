@@ -18,19 +18,12 @@ router.all('/*', async (req, res) => {
         const requestBody = req.body;
         const originalPath = req.path;
 
-        console.log('代理请求:', {
-            method: req.method,
-            path: originalPath,
-            virtual_key: userContext.virtual_key
-        });
-
         // 1. 获取完整配置（数据库函数已包含所有virtual_key验证）
-        let portkeyConfig;
+        let portkeyConfig
         try {
             portkeyConfig = await ConfigService.getAllConfigs(userContext, requestBody);
             console.log('获取配置成功');
-
-            // 2. 业务规则验证
+        //  2. 业务规则验证
             const metadata = portkeyConfig.metadata?._neuropia;
             if (metadata) {
                 await validateBusinessRules(metadata, userContext, requestBody, originalPath);
@@ -169,7 +162,7 @@ async function callPortkeyGateway(config, requestBody, userContext, path) {
             timestamp: new Date().toISOString()
         });
 
-        console.error('❌ Portkey Gateway 错误:', errorText);
+        console.error('Portkey Gateway 错误:', errorText);
         throw new Error(`Portkey Gateway error: ${response.status} ${response.statusText}`);
     }
 
@@ -177,14 +170,14 @@ async function callPortkeyGateway(config, requestBody, userContext, path) {
     const result = await responseClone.json();
 
     // 确保传递正确的 path 参数
-    console.log('📊 记录监控数据，路径:', path);
+    console.log('记录监控数据，路径:', path);
     trackApiRequest(userContext, response, result, requestBody, path);
 
     return result;
 }
 
 function getFallbackConfig(userContext, requestBody) {
-    console.warn('⚠️ 使用降级配置');
+    console.warn('️使用降级配置');
 
     return {
         strategy: { mode: "single" },

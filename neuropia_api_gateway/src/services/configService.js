@@ -12,7 +12,7 @@ class ConfigService {
   static async getAllConfigs(userContext, requestBody) {
     try {
       const { virtual_key } = userContext;
-      console.log('🔧 获取完整配置:', { virtual_key });
+      console.log('获取完整配置:', { virtual_key });
 
       // ----------------------
       // 1. 获取 virtual_key 配置
@@ -22,26 +22,10 @@ class ConfigService {
       // 验证和补全 metadata
       const validatedConfig = this.validateMetadata(computedConfig);
 
-      // ----------------------
-      // 2. 获取价格表
-      // ----------------------
-      const customer_type_id = computedConfig.customer_type_id; // 从 config 或 DB 获取
-      const pricing = await pricingCacheManager.getCustomerTypePricing(
-        customer_type_id,
-        async (ctId) => {
-          const { data, error } = await postgrest.rpc('get_customer_type_pricing', { p_customer_type_id: ctId });
-          if (error) throw error;
-          return data; // { "dashscope:qwen-pro": {...}, ... }
-        }
-      );
-
-      console.log('✅ 配置和价格矩阵获取完成');
-      return {
-        ...validatedConfig,
-        pricing
-      }
+      console.log('配置获取完成');
+      return validatedConfig
     } catch (error) {
-      console.error('❌ 配置获取失败:', error.message);
+      console.error('配置获取失败:', error.message);
       throw error;
     }
   }
@@ -57,7 +41,7 @@ class ConfigService {
     // ----------------------
     const cached = await RedisService.kv.get(cacheKey);
     if (cached) {
-      console.log('📦 配置缓存命中:', virtualKey);
+      console.log('配置缓存命中:', virtualKey);
       return JSON.parse(cached);
     }
 
@@ -78,7 +62,7 @@ class ConfigService {
     // 4. 写入缓存（TTL: 300 秒）
     // ----------------------
     await RedisService.kv.setex(cacheKey, 300, JSON.stringify(configWithApiKeys));
-    console.log('💾 配置缓存写入:', virtualKey);
+    console.log('配置缓存写入:', virtualKey);
 
     return configWithApiKeys;
   }
@@ -101,7 +85,7 @@ class ConfigService {
    * 降级配置（当上游不可用时）
    */
   static getFallbackConfig(userContext, requestBody) {
-    console.warn('⚠️ 使用降级配置');
+    console.warn('使用降级配置');
 
     return {
       strategy: {
