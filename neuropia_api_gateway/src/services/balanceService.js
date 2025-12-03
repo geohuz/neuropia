@@ -97,15 +97,6 @@ class BalanceService {
      }
 
 
-    /**
-     * 扣费（原子操作，Redis Lua 脚本）
-     */
-     /**
-      * 扣费单个账户
-      * @param {{id: string, type: string, accountData: object}} account
-      * @param {number|string} chargeAmount
-      */
-      // 不用封装的原生 eval 调用
       /**
        * 扣费单个账户
        * @param {{id: string, type: string, account: object}} account
