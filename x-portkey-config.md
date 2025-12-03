@@ -1,5 +1,9 @@
 # portkey gateway 的 x-portkey-config 详解
 
+- 当 `x-portkey-config` 包含 `strategy` 和 `targets` 时，它是一个完整的路由配置 requestBody.ts:175-214
+- 如果你想在多个 targets 中动态选择，应该使用 `x-portkey-metadata` 配合条件路由 handlerUtils.ts:723-763
+- 请求验证器要求必须提供 `x-portkey-config` 或 `x-portkey-provider` 中的一个 index.ts:106-124
+
 ## 主要配置
 
 | 属性                        | 类型          | 描述                   | 约束/默认值                                                 | 示例                                                        |

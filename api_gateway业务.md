@@ -1,4 +1,4 @@
-## 1. API Gateway 和 Portkey Gateway 的关系**
+## 1. API Gateway 和 Portkey Gateway 的关系
 
 - API Gateway **只负责业务逻辑、计费、权限、限流**
 - Portkey Gateway **只负责路由转发**

@@ -25,7 +25,7 @@ class ConfigService {
       console.log('配置获取完成');
       return validatedConfig
     } catch (error) {
-      console.error('配置获取失败:', error.message);
+      console.error('配置获取失败:', error);
       throw error;
     }
   }

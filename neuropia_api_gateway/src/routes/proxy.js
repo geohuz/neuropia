@@ -1,7 +1,8 @@
 // neuropia_api_gateway/src/routes/proxy.js
 const { portkeyConfigSchema } = require("../validation/portkey_schema_config");
 const { ConfigService } = require('../services/configService');
-const RedisService  = require('@shared/clients/redis_op')
+const { deductCost } = require('../services/billingService');
+const BalanceService = require('../services/balanceService');
 const express = require('express');
 const router = express.Router();
 
@@ -22,8 +23,7 @@ router.all('/*', async (req, res) => {
         let portkeyConfig
         try {
             portkeyConfig = await ConfigService.getAllConfigs(userContext, requestBody);
-            console.log('获取配置成功');
-        //  2. 业务规则验证
+            //  2. 业务规则验证
             const metadata = portkeyConfig.metadata?._neuropia;
             if (metadata) {
                 await validateBusinessRules(metadata, userContext, requestBody, originalPath);
@@ -45,7 +45,7 @@ router.all('/*', async (req, res) => {
         res.json(portkeyResponse);
 
     } catch (error) {
-        console.error('代理请求错误:', error);
+        console.error('代理请求错误 in proxy.js:', error);
 
         //  直接透传数据库错误
         if (error.message.includes('不在允许列表中')) {
@@ -84,11 +84,10 @@ async function validateBusinessRules(metadata, userContext, requestBody, path) {
             }
         }
     }
-
     // 2. 预算检查（需要实现）
-    if (budget) {
-        await checkBudget(budget, userContext, requestBody, path);
-    }
+    // if (budget) {
+    //     await checkBudget(budget, userContext, requestBody, path);
+    // }
 
     // 3. 限流检查（需要实现）
     if (rate_limits) {
@@ -96,10 +95,44 @@ async function validateBusinessRules(metadata, userContext, requestBody, path) {
     }
 }
 
-// 待实现的预算检查
+// 预算检查
 async function checkBudget(budgetConfig, userContext, requestBody, path) {
-    // 后续实现 Redis 原子操作检查余额
-    console.log('💰 预算检查:', budgetConfig);
+    const virtual_key = userContext.virtual_key;
+
+    // 获取账单主体
+    const account = await BalanceService.resolveBillingAccount(virtual_key);
+
+    // 查询余额（优先缓存）
+    const balanceData = await BalanceService.getBalanceByAccount(account);
+    const balance = Number(balanceData.balance ?? 0);
+
+    const minimumRequired = budgetConfig.minimum_required ?? 0.0005;
+
+    if (balance < minimumRequired) {
+        throw new Error(`余额不足（需要 >= ${minimumRequired}）`);
+    }
+
+    return true;
+}
+
+// -------------------- 扣费逻辑 --------------------
+async function chargeUserAfterRequest(virtual_key, portkeyResult, path) {
+    // 使用真实 tokens 计算费用
+    const usage = portkeyResult?.usage ?? {};
+    const totalTokens = usage.total_tokens ?? 0;
+
+    // 简单示例：1 token = 0.0001 美元
+    const cost = totalTokens * 0.0001;
+
+    if (cost <= 0) return;
+
+    const result = await BalanceService.chargeUser(virtual_key, String(cost));
+
+    if (result.err) {
+        console.warn(`扣费失败: ${result.err}, 虚拟 key: ${virtual_key}, path: ${path}`);
+    } else {
+        console.log(`💳 已扣费 ${cost.toFixed(4)}, 新余额 = ${result.ok.toFixed(4)}`);
+    }
 }
 
 // 待实现的限流检查
@@ -172,7 +205,8 @@ async function callPortkeyGateway(config, requestBody, userContext, path) {
     // 确保传递正确的 path 参数
     console.log('记录监控数据，路径:', path);
     trackApiRequest(userContext, response, result, requestBody, path);
-
+    // 扣费
+    await chargeUserAfterRequest(userContext.virtual_key, result, path);
     return result;
 }
 

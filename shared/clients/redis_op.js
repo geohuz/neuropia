@@ -86,6 +86,12 @@ const kv = {
   keys: async (pattern) => (await getClient()).keys(pattern),
   del: async (...keys) => (await getClient()).del(keys),
   exists: async (key) => (await getClient()).exists(key),
+  eval: async (script, keys = [], args = []) => {
+    const c = await getClient();
+    // 保证 args 都是 string
+    const stringArgs = args.map((a) => (typeof a === "number" ? String(a) : a));
+    return c.eval(script, { keys, arguments: stringArgs });
+  },
 };
 
 // ------------------------------

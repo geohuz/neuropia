@@ -9,6 +9,13 @@ const CACHE_KEYS = {
     // pricing
     VIRTUAL_KEY_PRICING: (vk) => `vk:${vk}:pricing`,
     CUSTOMER_TYPE_PRICING: (ctId) => `price:ct:${ctId}`,
+
+    // billing 主体缓存（vk -> billing account）
+    BILLING_ACCOUNT: (vk) => `billing_account:${vk}`,
+
+    // 账户余额缓存（按 type + id）
+    BALANCE: (type, id) => `balance:${type}:${id}`,
+
 };
 
 module.exports = CACHE_KEYS;
