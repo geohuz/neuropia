@@ -153,7 +153,7 @@ class BalanceService {
 
     // 查库
     const { data, error } = await postgrest
-      .from("account_balance")
+      .from("account_balances")
       .select("*")
       .eq(
         account.type === "tenant" ? "owner_tenantid" : "owner_userid",
@@ -161,7 +161,10 @@ class BalanceService {
       )
       .single();
 
-    if (error || !data) throw new Error("BALANCE_NOT_FOUND");
+    if (error || !data) {
+      console.log("error in getBalanceByAccount", error);
+      throw new Error("BALANCE_NOT_FOUND");
+    }
 
     await RedisService.kv.setex(cacheKey, TTL, JSON.stringify(data));
 
