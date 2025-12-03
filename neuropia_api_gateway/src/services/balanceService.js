@@ -2,7 +2,7 @@ const { Client } = require("pg");
 const postgrest = require("../clients/postgrest");
 const RedisService = require("@shared/clients/redis_op");
 const CACHE_KEYS = require("../constants/cacheKeys");
-const TTL = 30;
+const TTL = 86400; // 24 小时
 
 class BalanceService {
   static pgClient = null;
