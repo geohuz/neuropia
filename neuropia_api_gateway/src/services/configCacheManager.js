@@ -3,7 +3,7 @@ const { Client } = require("pg");
 const RedisService = require("@shared/clients/redis_op");
 const CACHE_KEYS = require("../constants/cacheKeys");
 const pgNotifyListener = require("../listeners/pgNotifyListener");
-const { ALL_CHANNELS } = require("../constants/pgNotifyChannels");
+const ALL_CHANNELS = require("../constants/pgNotifyChannels");
 
 class ConfigCacheManager {
   constructor() {

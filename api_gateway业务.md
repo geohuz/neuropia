@@ -752,7 +752,7 @@ CREATE TABLE IF NOT EXISTS data.provider_rate
 
 virtual_key -> 要绑定 provider_models
 
-virtual_key n -> 1 user_profile (george)  customer_type_id -> customer_rate  1 -> n provider_rate 
+virtual_key n -> 1 user_profile.customer_type_id -> customer_type_rate  1 -> n provider_rate 
 
 data.user_profile:
 

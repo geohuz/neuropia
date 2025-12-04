@@ -1,5 +1,5 @@
 // 所有需要监听的pg_notify频道
-const PG_NOTIFY_CHANNELS = {
+const ALL_CHANNELS = {
   // 价格相关
   CUSTOMER_TYPE_RATE_UPDATE: "customer_type_rate_update",
 
@@ -15,9 +15,4 @@ const PG_NOTIFY_CHANNELS = {
   // 其他频道...
 };
 
-// 获取所有频道数组
-const ALL_CHANNELS = Object.values(PG_NOTIFY_CHANNELS);
-
-module.exports = {
-  ALL_CHANNELS,
-};
+module.exports = ALL_CHANNELS;

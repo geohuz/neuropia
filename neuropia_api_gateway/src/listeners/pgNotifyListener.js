@@ -1,6 +1,6 @@
 const EventEmitter = require("events");
 const sharedPg = require("@shared/clients/pg");
-const { ALL_CHANNELS } = require("../constants/pgNotifyChannels");
+const ALL_CHANNELS = require("../constants/pgNotifyChannels");
 
 let listenClient = null;
 let isListening = false;
@@ -13,7 +13,7 @@ async function start() {
     listenClient = await sharedPg.connect();
 
     // 批量监听所有配置的频道
-    const listenPromises = ALL_CHANNELS.map((channel) =>
+    const listenPromises = Object.values(ALL_CHANNELS).map((channel) =>
       listenClient.query(`LISTEN ${channel}`),
     );
     await Promise.all(listenPromises);

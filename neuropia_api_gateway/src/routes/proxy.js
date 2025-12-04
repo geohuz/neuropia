@@ -63,8 +63,6 @@ router.all("/*", async (req, res) => {
 
     res.json(portkeyResponse);
   } catch (error) {
-    console.error("代理请求错误 in proxy.js:", error);
-
     //  直接透传数据库错误
     if (error.message.includes("不在允许列表中")) {
       return res.status(403).json({
@@ -102,9 +100,17 @@ async function validateBusinessRules(metadata, userContext, requestBody, path) {
       }
     }
   }
-  // 2. 预算检查（需要实现）
+
   if (budget) {
-    await checkBudget(budget, userContext, requestBody, path);
+    // ✅ 获取上下文，后续扣费可以直接用
+    const billingContext = await checkBudget(
+      budget,
+      userContext,
+      requestBody,
+      path,
+    );
+    // 可以把上下文存到请求中，后续扣费用
+    userContext.billingContext = billingContext;
   }
 
   // 3. 限流检查（需要实现）
@@ -117,12 +123,17 @@ async function validateBusinessRules(metadata, userContext, requestBody, path) {
 async function checkBudget(budgetConfig, userContext, requestBody, path) {
   const virtual_key = userContext.virtual_key;
 
-  // 获取账单主体
-  const account = await BalanceService.resolveBillingAccount(virtual_key);
+  // ✅ 使用新接口：getBillingContext
+  const context = await BalanceService.getBillingContext(virtual_key);
 
-  // 查询余额（优先缓存）
-  const balanceData = await BalanceService.getBalanceByAccount(account);
-  const balance = Number(balanceData.balance ?? 0);
+  // ✅ 可选：校验上下文
+  const validation = await BalanceService.validateBillingContext(context);
+  if (!validation.valid) {
+    console.error("计费上下文校验失败:", validation.issues);
+    // 可以选择抛错或继续
+  }
+
+  const balance = Number(context.account.balance ?? 0);
 
   if (balance < MIN_REQUIRED_BALANCE) {
     const err = new Error(`余额不足（需要 >= ${MIN_REQUIRED_BALANCE}）`);
@@ -130,30 +141,54 @@ async function checkBudget(budgetConfig, userContext, requestBody, path) {
     throw err;
   }
 
-  return true;
+  // ✅ 返回上下文，后续扣费可以用
+  return context;
 }
 
 // -------------------- 扣费逻辑 --------------------
-async function chargeUserAfterRequest(virtual_key, portkeyResult, path) {
-  // 使用真实 tokens 计算费用
+async function chargeForUsageAfterRequest(virtual_key, portkeyResult, path) {
   const usage = portkeyResult?.usage ?? {};
-  const totalTokens = usage.total_tokens ?? 0;
+  const provider = portkeyResult?.provider; // 需要确保Portkey返回provider
+  const model = portkeyResult?.model; // 需要确保Portkey返回model
 
-  // 简单示例：1 token = 0.0001 美元
-  const cost = totalTokens * 0.0001;
+  if (!provider || !model) {
+    console.warn("Portkey响应缺少provider或model信息，无法精确计费");
+    return;
+  }
 
-  if (cost <= 0) return;
+  if (!usage.input_tokens && !usage.output_tokens && !usage.total_tokens) {
+    console.log("无token用量，跳过计费");
+    return;
+  }
 
-  const result = await BalanceService.chargeUser(virtual_key, String(cost));
-
-  if (result.err) {
-    console.warn(
-      `扣费失败: ${result.err}, 虚拟 key: ${virtual_key}, path: ${path}`,
+  try {
+    // ✅ 使用新接口：chargeForUsage
+    const result = await BalanceService.chargeForUsage(
+      virtual_key,
+      provider,
+      model,
+      {
+        input_tokens: usage.prompt_tokens || 0,
+        output_tokens: usage.completion_tokens || 0,
+        total_tokens: usage.total_tokens || 0,
+      },
     );
-  } else {
+
     console.log(
-      `💳 已扣费 ${cost.toFixed(4)}, 新余额 = ${result.ok.toFixed(4)}`,
+      `💳 已扣费 ${result.cost.toFixed(4)} ${result.currency}, 新余额 = ${result.new_balance?.toFixed(4)}`,
     );
+
+    return result;
+  } catch (error) {
+    console.error(
+      `❌ 扣费失败: ${error.message}, ` +
+        `virtual_key: ${virtual_key}, ` +
+        `provider: ${provider}, model: ${model}, ` +
+        `path: ${path}`,
+    );
+
+    // ✅ 扣费失败时中断请求
+    throw new Error(`BILLING_FAILED: ${error.message}`);
   }
 }
 
@@ -232,7 +267,22 @@ async function callPortkeyGateway(config, requestBody, userContext, path) {
   console.log("记录监控数据，路径:", path);
   trackApiRequest(userContext, response, result, requestBody, path);
   // 扣费
-  await chargeUserAfterRequest(userContext.virtual_key, result, path);
+  const chargeResult = await chargeForUsageAfterRequest(
+    userContext.virtual_key,
+    result,
+    path,
+  );
+  // 可选：把扣费结果也返回给客户端（用于调试）
+  result.billing = {
+    charged: chargeResult
+      ? {
+          cost: chargeResult.cost,
+          currency: chargeResult.currency,
+          new_balance: chargeResult.new_balance,
+        }
+      : null,
+  };
+
   return result;
 }
 

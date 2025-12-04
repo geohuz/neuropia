@@ -109,3 +109,29 @@
 
 我可以帮你画一张简化的流程图，把 **实时扣费 + 异步回写** 的链路标清楚，让团队理解。你要吗？
 
+
+
+
+
+
+
+## 建议的实施步骤：
+
+
+
+## 具体改动：
+
+1. **数据库层**：修改 `billing_accounts` view 加入 `customer_type_id`
+2. **缓存层**：设计统一的 `billing_context:${virtualKey}` 缓存键
+3. **BalanceService**：新增 `getBillingContext()` 方法
+4. **扣费流程**：基于完整上下文计费扣费
+
+
+
+1. **修改数据库触发器**：通知时带完整数据
+2. **修改 BalanceService.handleBalanceChange**：直接更新缓存，无需查库
+3. **实现 getBillingContext() 方法**：统一获取计费上下文
+4. **修改 API Gateway 调用**：使用新的统一接口
+
+**这样设计后，计费系统的响应速度会更快，一致性也更好。**
+

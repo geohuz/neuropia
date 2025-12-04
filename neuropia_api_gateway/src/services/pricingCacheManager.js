@@ -1,11 +1,12 @@
 // src/services/pricingCacheManager.js
 const RedisService = require("@shared/clients/redis_op");
 const postgrest = require("../clients/postgrest");
-const CACHE_KEYS = require("../constants/cacheKeys");
 const pgNotifyListener = require("../listeners/pgNotifyListener");
-const { ALL_CHANNELS } = require("../constants/pgNotifyChannels");
+const ALL_CHANNELS = require("../constants/pgNotifyChannels");
+const CACHE_KEYS = require("../constants/cacheKeys");
 
-const DEFAULT_TTL = 300; // 秒
+const TTL = CACHE_KEYS.TTL.VIRTUAL_KEY_PRICING;
+console.log("ALL_CHA", ALL_CHANNELS);
 
 class PricingCacheManager {
   constructor() {
@@ -15,10 +16,26 @@ class PricingCacheManager {
   async initialize() {
     if (this.initialized) return;
 
+    console.log(
+      "🔧 PricingCacheManager 初始化，监听频道:",
+      ALL_CHANNELS.CUSTOMER_TYPE_RATE_UPDATE,
+    );
+    console.log("🔧 pgNotifyListener.eventBus:", !!pgNotifyListener.eventBus);
+    console.log(
+      "🔧 pgNotifyListener.eventBus.on 方法:",
+      typeof pgNotifyListener.eventBus.on,
+    );
+
     // 注册价格变化处理器（app.js已确保pgNotifyListener.start()）
     pgNotifyListener.eventBus.on(
       ALL_CHANNELS.CUSTOMER_TYPE_RATE_UPDATE,
       async (payload) => {
+        console.log("🔔 [Price] 收到通知事件:", {
+          channel: ALL_CHANNELS.CUSTOMER_TYPE_RATE_UPDATE,
+          payload: payload,
+          payloadType: typeof payload,
+          timestamp: new Date().toISOString(),
+        });
         await this.handlePriceChange(payload);
       },
     );
@@ -30,58 +47,30 @@ class PricingCacheManager {
   /**
    * 处理价格表变动
    */
-  async handlePriceChange(ctId) {
+  async handlePriceChange(payload) {
+    const ctId = payload.customer_type_id;
     console.log("📢 Detected price change for customer_type_id:", ctId);
 
-    // 1️⃣ 失效 customer_type 缓存
+    // 1. 失效 customer_type 缓存
     await this.invalidateCustomerTypePricing(ctId);
 
-    // 2️⃣ 失效依赖该 customer_type 的 virtual_key 缓存
-    await this._invalidateVirtualKeysByCustomerType(ctId);
-  }
+    // 2. 失效依赖的 virtual_key 价格缓存
+    const { data: vks } = await postgrest
+      .from("virtual_keys_by_customer_type")
+      .select("virtual_key")
+      .eq("customer_type_id", ctId);
 
-  /**
-   * 内部方法：根据 customer_type 查找依赖的 virtual_key 并失效缓存
-   */
-  async _invalidateVirtualKeysByCustomerType(ctId) {
-    try {
-      const { data: vks, error } = await postgrest
-        .from("virtual_keys_by_customer_type")
-        .select("virtual_key")
-        .eq("customer_type_id", ctId);
-
-      if (error) {
-        console.error(
-          "❌ Failed to get virtual_keys for customer_type_id:",
-          ctId,
-          error,
-        );
-        return;
+    if (Array.isArray(vks)) {
+      for (const { virtual_key } of vks) {
+        await this.invalidateVirtualKeyPricing(virtual_key);
       }
-
-      if (!Array.isArray(vks) || vks.length === 0) {
-        console.log(`ℹ️ No virtual_keys found for customer_type_id: ${ctId}`);
-        return;
-      }
-
-      for (const vkRow of vks) {
-        const vk = vkRow.virtual_key;
-        await this.invalidateVirtualKeyPricing(vk);
-        console.log(`🧹 Invalidated virtual_key pricing cache: ${vk}`);
-      }
-    } catch (err) {
-      console.error(
-        "❌ Unexpected error in _invalidateVirtualKeysByCustomerType:",
-        ctId,
-        err,
-      );
     }
   }
 
   /**
    * 获取 virtual_key 的价格配置（封装数据库查询）
    */
-  async getVirtualKeyPricing(virtualKey, ttl = DEFAULT_TTL) {
+  async getVirtualKeyPricing(virtualKey, ttl = TTL) {
     const cacheKey = CACHE_KEYS.VIRTUAL_KEY_PRICING(virtualKey);
 
     // 1. 检查缓存
@@ -119,7 +108,7 @@ class PricingCacheManager {
   /**
    * 获取 customer_type 的价格配置（封装数据库查询）
    */
-  async getCustomerTypePricing(customerTypeId, ttl = DEFAULT_TTL) {
+  async getCustomerTypePricing(customerTypeId, ttl = TTL) {
     const cacheKey = CACHE_KEYS.CUSTOMER_TYPE_PRICING(customerTypeId);
 
     // 1. 检查缓存
@@ -185,57 +174,15 @@ class PricingCacheManager {
   }
 
   /**
-   * 计算使用费用
-   */
-  async calculateCost(virtualKey, provider, model, usage) {
-    const priceInfo = await this.getProviderModelPrice(
-      virtualKey,
-      provider,
-      model,
-    );
-
-    let cost = 0;
-
-    if (priceInfo.pricing_model === "per_token" && priceInfo.price_per_token) {
-      // 按 token 计费
-      const totalTokens =
-        (usage.input_tokens || 0) + (usage.output_tokens || 0);
-      cost = totalTokens * priceInfo.price_per_token;
-    } else if (
-      priceInfo.price_per_input_token &&
-      priceInfo.price_per_output_token
-    ) {
-      // 按输入输出 token 分别计费
-      cost =
-        (usage.input_tokens || 0) * priceInfo.price_per_input_token +
-        (usage.output_tokens || 0) * priceInfo.price_per_output_token;
-    } else if (priceInfo.price_per_token) {
-      // 回退到通用 token 计费
-      const totalTokens =
-        (usage.input_tokens || 0) + (usage.output_tokens || 0);
-      cost = totalTokens * priceInfo.price_per_token;
-    } else {
-      throw new Error("Invalid pricing model");
-    }
-
-    return {
-      cost,
-      currency: priceInfo.currency || "USD",
-      price_info: priceInfo,
-      usage,
-    };
-  }
-
-  /**
    * 刷新缓存
    */
-  async refreshVirtualKeyPricing(virtualKey, ttl = DEFAULT_TTL) {
+  async refreshVirtualKeyPricing(virtualKey, ttl = TTL) {
     console.log("🔄 刷新 virtual key 价格缓存:", virtualKey);
     await this.invalidateVirtualKeyPricing(virtualKey);
     return this.getVirtualKeyPricing(virtualKey, ttl);
   }
 
-  async refreshCustomerTypePricing(customerTypeId, ttl = DEFAULT_TTL) {
+  async refreshCustomerTypePricing(customerTypeId, ttl = TTL) {
     console.log("🔄 刷新 customer type 价格缓存:", customerTypeId);
     await this.invalidateCustomerTypePricing(customerTypeId);
     return this.getCustomerTypePricing(customerTypeId, ttl);
@@ -247,7 +194,12 @@ class PricingCacheManager {
   async invalidateVirtualKeyPricing(virtualKey) {
     const cacheKey = CACHE_KEYS.VIRTUAL_KEY_PRICING(virtualKey);
     await RedisService.kv.del(cacheKey);
-    console.log("❌ Virtual key 价格缓存失效:", virtualKey);
+
+    // ✅ 同时失效 BILLING_CONTEXT
+    const contextKey = CACHE_KEYS.BILLING_CONTEXT(virtualKey);
+    await RedisService.kv.del(contextKey);
+
+    console.log(`❌ 失效价格和相关缓存: ${virtualKey}`);
   }
 
   async invalidateCustomerTypePricing(customerTypeId) {
