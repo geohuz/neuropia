@@ -1,45 +1,34 @@
-const { Client } = require("pg");
 const postgrest = require("../clients/postgrest");
 const RedisService = require("@shared/clients/redis_op");
 const CACHE_KEYS = require("../constants/cacheKeys");
+const pgNotifyListener = require("../listeners/pgNotifyListener");
+const { ALL_CHANNELS } = require("../constants/pgNotifyChannels");
+
 const TTL = 86400; // 24 小时
 
 class BalanceService {
-  static pgClient = null;
-  static initialized = false;
+  constructor() {
+    this.initialized = false;
+  }
 
-  // ------------------------------
-  // 初始化 pg_notify 监听
-  // ------------------------------
-  static async initialize() {
+  async initialize() {
     if (this.initialized) return;
 
-    this.pgClient = new Client({ connectionString: process.env.DATABASE_URL });
-    await this.pgClient.connect();
-
-    // 监听 account_balance 变动
-    await this.pgClient.query("LISTEN account_balance_updated");
-
-    this.pgClient.on("notification", async (msg) => {
-      try {
-        if (msg.channel === "account_balance_updated") {
-          const payload = JSON.parse(msg.payload); // { owner_userid, owner_tenantid }
-          console.log("account_balance_udpated: ", payload);
-          await this.handleBalanceChange(payload);
-        }
-      } catch (err) {
-        console.error("❌ Error handling balance pg notification:", err);
-      }
-    });
+    pgNotifyListener.eventBus.on(
+      ALL_CHANNELS.ACCOUNT_BALANCE_UPDATED,
+      async (payload) => {
+        await this.handleBalanceChange(payload);
+      },
+    );
 
     this.initialized = true;
-    console.log("✅ BalanceService initialized with pg_notify listening");
+    console.log("✅ balanceService manager initialized");
   }
 
   // ------------------------------
   // 处理账户余额变动
   // ------------------------------
-  static async handleBalanceChange({ account_id, account_type }) {
+  async handleBalanceChange({ account_id, account_type }) {
     try {
       // 1️⃣ 删除余额缓存
       const balanceKey = CACHE_KEYS.BALANCE(account_type, account_id);
@@ -83,7 +72,7 @@ class BalanceService {
   /**
    * 根据 virtual_key 解析实际扣费账户
    */
-  static async resolveBillingAccount(virtualKey) {
+  async resolveBillingAccount(virtualKey) {
     if (!virtualKey) throw new Error("INVALID_VIRTUAL_KEY");
 
     const redisKey = CACHE_KEYS.BILLING_ACCOUNT(virtualKey);
@@ -121,7 +110,7 @@ class BalanceService {
   /**
    * 确保 Redis 余额缓存存在
    */
-  static async ensureCache(account) {
+  async ensureCache(account) {
     // account: { id, type, account }
     const key = CACHE_KEYS.BALANCE(account.type, account.id);
 
@@ -145,7 +134,7 @@ class BalanceService {
   /**
    * 获取账户余额
    */
-  static async getBalanceByAccount(account) {
+  async getBalanceByAccount(account) {
     const cacheKey = CACHE_KEYS.BALANCE(account.type, account.id);
 
     const cached = await RedisService.kv.get(cacheKey);
@@ -176,56 +165,11 @@ class BalanceService {
    * @param {{id: string, type: string, account: object}} account
    * @param {number|string} chargeAmount
    */
-  static async chargeAccount(account, chargeAmount) {
-    // 1. Redis key 必须是字符串
-    const key = String(CACHE_KEYS.BALANCE(account.type, account.id));
-
-    // 2. chargeAmount 必须转换为字符串
-    const chargeStr = String(chargeAmount);
-
-    // 3. 参数检查
-    if (!key) throw new Error("Redis key is empty");
-    if (!chargeStr || isNaN(Number(chargeStr)))
-      throw new Error("chargeAmount is invalid");
-
-    // 4. Lua 脚本
-    const lua = `
-          local key = KEYS[1]
-          local charge = tonumber(ARGV[1])
-          local balStr = redis.call("GET", key)
-
-          if not balStr then
-              return cjson.encode({ err="BALANCE_NOT_FOUND" })
-          end
-
-          local bal = cjson.decode(balStr)
-
-          if bal.balance < charge then
-              return cjson.encode({ err="INSUFFICIENT_BALANCE" })
-          end
-
-          bal.balance = bal.balance - charge
-          redis.call("SET", key, cjson.encode(bal))
-
-          return cjson.encode({ ok = bal.balance })
-        `;
-
-    // 5. 执行 Lua 脚本
-    const client = await RedisService.connect(); // 获取 Redis client
-    const rawResult = await client.eval(lua, {
-      keys: [key],
-      arguments: [chargeStr],
-    });
-
-    // 6. 解析返回结果
-    const result = JSON.parse(rawResult);
-    return result;
-  }
 
   /**
    * 一步完成: 根据 virtual_key 获取余额
    */
-  static async getBalance(vk) {
+  async getBalance(vk) {
     const account = await this.resolveBillingAccount(vk);
     return await this.getBalanceByAccount(account);
   }
@@ -233,16 +177,95 @@ class BalanceService {
   /**
    * 一步完成: 根据 virtual_key 扣费
    */
-  static async chargeUser(virtual_key, chargeAmount) {
-    const account = await this.resolveBillingAccount(virtual_key);
-    if (!account) throw new Error("ACCOUNT_NOT_FOUND");
+  /**
+   * 一步完成: 根据 virtual_key 扣费
+   */
+  async chargeUser(virtual_key, chargeAmount) {
+    if (!virtual_key || !chargeAmount) {
+      throw new Error("MISSING_PARAMS");
+    }
 
-    // 保证 Redis 缓存
+    // 1. 解析扣费账户
+    const account = await this.resolveBillingAccount(virtual_key);
+    if (!account) {
+      throw new Error("ACCOUNT_NOT_FOUND");
+    }
+
+    // 2. 保证 Redis 缓存存在
     await this.ensureCache(account);
 
-    // 扣费
-    return await this.chargeAccount(account, chargeAmount);
+    // 3. 准备扣费参数
+    const key = String(CACHE_KEYS.BALANCE(account.type, account.id));
+    const chargeStr = String(chargeAmount);
+
+    if (!key) {
+      throw new Error("REDIS_KEY_EMPTY");
+    }
+
+    if (!chargeStr || isNaN(Number(chargeStr)) || Number(chargeStr) <= 0) {
+      throw new Error("INVALID_CHARGE_AMOUNT");
+    }
+
+    // 4. Lua 脚本扣费
+    const lua = `
+       local key = KEYS[1]
+       local charge = tonumber(ARGV[1])
+
+       if charge <= 0 then
+         return cjson.encode({ err = "INVALID_CHARGE_AMOUNT" })
+       end
+
+       local balStr = redis.call("GET", key)
+
+       if not balStr then
+         return cjson.encode({ err = "BALANCE_NOT_FOUND" })
+       end
+
+       local bal = cjson.decode(balStr)
+
+       if type(bal) ~= "table" or bal.balance == nil then
+         return cjson.encode({ err = "INVALID_BALANCE_FORMAT" })
+       end
+
+       if bal.balance < charge then
+         return cjson.encode({
+           err = "INSUFFICIENT_BALANCE",
+           current = bal.balance,
+           required = charge
+         })
+       end
+
+       bal.balance = bal.balance - charge
+       redis.call("SET", key, cjson.encode(bal))
+
+       return cjson.encode({
+         ok = true,
+         new_balance = bal.balance,
+         charged = charge
+       })
+     `;
+
+    // 5. 执行 Lua 脚本
+    const client = await RedisService.connect();
+    const rawResult = await client.eval(lua, {
+      keys: [key],
+      arguments: [chargeStr],
+    });
+
+    // 6. 解析返回结果
+    const result = JSON.parse(rawResult);
+
+    if (result.err) {
+      throw new Error(result.err);
+    }
+
+    console.log(
+      `✅ 扣费成功: ${virtual_key}, 扣费金额: ${chargeAmount}, 新余额: ${result.new_balance}`,
+    );
+
+    return result;
   }
 }
 
-module.exports = BalanceService;
+const balanceService = new BalanceService();
+module.exports = balanceService;

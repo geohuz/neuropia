@@ -13,10 +13,11 @@ const RequestLogger = require("./middleware/requestLogger");
 const proxyRoutes = require("./routes/proxy");
 
 // 服务
+const pgNotifyListener = require("./listeners/pgNotifyListener");
 const RedisService = require("@shared/clients/redis_op");
 const configCacheManager = require("./services/configCacheManager");
 const pricingCacheManager = require("./services/pricingCacheManager");
-const BalanceService = require("./services/balanceService");
+const balanceService = require("./services/balanceService");
 
 let server = null;
 let initialized = false;
@@ -27,19 +28,20 @@ async function initialize() {
   try {
     console.log("🚀 Initializing Neuropia API Gateway...");
 
+    await pgNotifyListener.start();
+    console.log("✅ pg_notify listener started");
+
     // 1. 连接 Redis
     await RedisService.connect();
     console.log("✅ Redis connected successfully");
 
     // 2. 初始化配置缓存管理器
     await configCacheManager.initialize();
-    console.log("✅ configCacheManager initialized");
-    //
+
     // 2. 初始化价格缓存管理器
     await pricingCacheManager.initialize();
-    console.log("✅ pricingCacheManager initialized");
 
-    await BalanceService.initialize();
+    await balanceService.initialize();
 
     initialized = true;
     console.log("Neuropia API Gateway initialized successfully");
