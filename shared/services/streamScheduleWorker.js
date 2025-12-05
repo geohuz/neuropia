@@ -158,7 +158,7 @@ class SchedulerService {
 
       // 基础日志
       console.log(
-        `📊 Stream状态: ${stats.total_messages} 消息, ${stats.active_shards}/${stats.total_shards} 活跃分片, 耗时 ${duration}ms`,
+        `📊 Stream状态: 历史消息=${stats.total_messages}, 待处理=${stats.pending_messages || 0}, 延迟=${stats.consumer_lag || 0}ms, ${stats.active_shards}/${stats.total_shards}活跃分片, 耗时 ${duration}ms`,
       );
 
       // 检查异常情况
@@ -182,7 +182,7 @@ class SchedulerService {
     const config = this.config;
 
     // 1. 消息积压过多
-    if (stats.total_messages > config.thresholds.backlog) {
+    if ((stats.pending_message || 0) > config.thresholds.backlog) {
       alerts.push({
         level: "warning",
         type: "stream_backlog",

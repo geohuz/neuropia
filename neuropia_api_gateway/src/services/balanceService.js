@@ -317,6 +317,14 @@ class BalanceService {
           new_balance: chargeResult.new_balance,
         });
 
+        // 先提取 input/output tokens
+        const inputTokens = usage.input_tokens || usage.prompt_tokens || 0;
+        const outputTokens =
+          usage.output_tokens || usage.completion_tokens || 0;
+
+        // total_tokens 优先用传进来的，没有就自己算
+        const totalTokens = usage.total_tokens || inputTokens + outputTokens;
+
         // ✅ 异步写入，不阻塞主流程
         this._writeToStreamInBackground({
           account_id: context.account.id,
@@ -327,8 +335,9 @@ class BalanceService {
           currency: currency,
           provider: provider,
           model: model,
-          input_tokens: usage.input_tokens || 0,
-          output_tokens: usage.output_tokens || 0,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          total_tokens: totalTokens,
         }).catch((err) => {
           // Stream失败只记录，不影响主流程
           logger.error("Stream写入失败（不影响扣费）", {
