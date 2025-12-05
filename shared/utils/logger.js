@@ -1,86 +1,49 @@
-// shared/utils/logger.js
-class Logger {
-  static info(message, meta = {}) {
-    this.log("info", message, meta);
-  }
+// utils/logger.js
+const winston = require('winston');
+const path = require('path');
 
-  static error(message, meta = {}) {
-    this.log("error", message, meta);
-  }
+const isProduction = process.env.NODE_ENV === 'production';
+const logLevel = process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug');
 
-  static warn(message, meta = {}) {
-    this.log("warn", message, meta);
-  }
+const logger = winston.createLogger({
+  level: logLevel,
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }), // ✅ 自动捕获堆栈
+    isProduction 
+      ? winston.format.json() // 生产：JSON
+      : winston.format.printf(({ timestamp, level, message, stack, ...meta }) => {
+          // 开发：易读格式
+          let log = `${timestamp} [${level}] ${message}`;
+          if (stack) log += `\n${stack}`; // ✅ 堆栈单独显示
+          if (Object.keys(meta).length) log += ` ${JSON.stringify(meta, null, 2)}`;
+          return log;
+        })
+  ),
+  transports: [
+    // 生产：文件 + 控制台（简化）
+    new winston.transports.File({ 
+      filename: path.join(__dirname, '../../logs/error.log'), 
+      level: 'error',
+      maxsize: 10 * 1024 * 1024, // 10MB
+      maxFiles: 5
+    }),
+    new winston.transports.File({ 
+      filename: path.join(__dirname, '../../logs/combined.log'),
+      maxsize: 10 * 1024 * 1024,
+      maxFiles: 10
+    }),
+  ]
+});
 
-  static debug(message, meta = {}) {
-    if (process.env.NODE_ENV === "development") {
-      this.log("debug", message, meta);
-    }
-  }
-
-  static log(level, message, meta = {}) {
-    const timestamp = new Date().toISOString();
-    const logEntry = {
-      timestamp,
-      level: level.toUpperCase(),
-      service: process.env.SERVICE_NAME || "unknown",
-      environment: process.env.NODE_ENV || "development",
-      message,
-      ...meta,
-    };
-
-    const logString = JSON.stringify(logEntry);
-
-    switch (level) {
-      case "error":
-        console.error(logString);
-        break;
-      case "warn":
-        console.warn(logString);
-        break;
-      case "info":
-        console.info(logString);
-        break;
-      default:
-        console.log(logString);
-    }
-  }
-
-  // 请求日志中间件
-  static requestLogger() {
-    return (req, res, next) => {
-      const startTime = Date.now();
-
-      res.on("finish", () => {
-        const duration = Date.now() - startTime;
-        Logger.info("HTTP Request", {
-          method: req.method,
-          url: req.url,
-          status: res.statusCode,
-          duration: `${duration}ms`,
-          user_agent: req.get("User-Agent"),
-          ip: req.ip,
-          virtual_key: req.get("x-virtual-key"),
-        });
-      });
-
-      next();
-    };
-  }
-
-  // 错误日志中间件
-  static errorLogger() {
-    return (err, req, res, next) => {
-      Logger.error("Unhandled Error", {
-        error: err.message,
-        stack: err.stack,
-        method: req.method,
-        url: req.url,
-        virtual_key: req.get("x-virtual-key"),
-      });
-      next(err);
-    };
-  }
+// 开发环境添加控制台（彩色）
+if (!isProduction) {
+  logger.add(new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  }));
 }
 
-module.exports = Logger;
+module.exports = logger;

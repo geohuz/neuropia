@@ -1,7 +1,5 @@
 // neuropia_api_gateway/src/server.js
-require('module-alias/register');
-require("dotenv").config();
-
+require("module-alias/register");
 const gateway = require("./app");
 
 async function startServer() {

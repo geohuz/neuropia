@@ -1,6 +1,6 @@
 // src/services/pricingCacheManager.js
 const RedisService = require("@shared/clients/redis_op");
-const postgrest = require("../clients/postgrest");
+const postgrest = require("@shared/clients/postgrest");
 const pgNotifyListener = require("../listeners/pgNotifyListener");
 const ALL_CHANNELS = require("../constants/pgNotifyChannels");
 const CACHE_KEYS = require("../constants/cacheKeys");

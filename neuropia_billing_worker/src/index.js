@@ -1,25 +1,29 @@
-require("module-alias/register");
-
 // neuropia_billing_worker/src/index.js
-const flushBalances = require("./balanceFlusher");
-const flushUsage = require("./usageFlusher");
+require("module-alias/register");
+const streamConsumer = require("./streamConsumer");
+const SchedulerService = require("@shared/services/streamScheduleWorker");
 
-const FLUSH_INTERVAL = 5000; // 5 秒
+async function main() {
+  console.log("🚀 启动Billing Worker...");
 
-setInterval(async () => {
   try {
-    await flushBalances();
-  } catch (err) {
-    console.error("❌ flushBalances failed:", err);
-  }
-}, FLUSH_INTERVAL);
+    // 1. 启动Stream消费者
+    console.log("🔄 启动Stream消费者...");
+    await streamConsumer.startStreamConsumer();
 
-setInterval(async () => {
-  try {
-    await flushUsage();
-  } catch (err) {
-    console.error("❌ flushUsage failed:", err);
-  }
-}, FLUSH_INTERVAL);
+    // 2. 启动定时任务（清理和监控Stream）
+    console.log("🔄 启动定时任务...");
+    SchedulerService.startAll();
 
-console.log("✅ neuropia_billing_worker started");
+    console.log("✅ Billing Worker运行中");
+
+    // 保持进程运行
+    await new Promise(() => {});
+  } catch (error) {
+    console.error("❌ Billing Worker失败:", error);
+    process.exit(1);
+  }
+}
+
+// 启动
+main();

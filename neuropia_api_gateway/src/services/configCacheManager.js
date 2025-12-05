@@ -1,5 +1,5 @@
 // neuropia_api_gateway/src/services/cacheManager.js
-const { Client } = require("pg");
+const { Client } = require("@shared/clients/pg");
 const RedisService = require("@shared/clients/redis_op");
 const CACHE_KEYS = require("../constants/cacheKeys");
 const pgNotifyListener = require("../listeners/pgNotifyListener");

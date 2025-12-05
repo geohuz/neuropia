@@ -138,13 +138,67 @@ async validatePricingCompleteness() {
 }
 ```
 
-
-
-
-
 ## **下一步建议：**
 
 1. **先去掉回退逻辑**，测试配置不全时的报错
 2. **补全价格配置**，确保所有在用模型都有价格
 3. **进行压力测试**，验证缓存策略性能
 4. **完善监控**，确保生产环境可观测
+
+
+
+1. **废弃 balance_flusher.js**（不再需要）
+2. **增强 usage_flusher.js**（加幂等性、恢复机制）
+3. **API Gateway确保生成 request_id**
+4. **设计 usage_log 表结构**（包含所有必要字段）
+
+
+
+### **关键设计决策点**
+
+#### **7.1 异步更新的程度选择**
+
+**方案A：完全异步（推荐）**
+
+- account_balance.balance字段不实时更新
+- 实时余额查询走Redis
+- DB只作为持久化归档
+
+**方案B：部分异步**
+
+- 高频扣费异步，大额充值同步
+- account_balance.balance延迟更新（如每分钟）
+- 复杂度更高
+
+#### **7.2 数据一致性级别**
+
+- **最终一致性**：接受分钟级延迟，最简单
+- **会话一致性**：同一用户的查询保持一致
+- **强一致性**：关键操作同步写DB
+
+```
+实时层（Redis）：
+  - 实时余额
+  - 扣费队列
+  - 实时统计
+
+异步层（BillingWorker）：
+  - 批量写usage_log
+  - 批量写audit_log（不更新余额）
+  - 更新total_consumed
+
+同步层（定期任务）：
+  - 每小时同步余额到account_balance.redis_balance
+  - 每日对账修复
+  - 刷新物化视图
+
+查询层：
+  - 实时查询：Redis + usage_log
+  - 历史查询：DB汇总表
+  - 对账查询：sync_log表
+```
+
+1. **usage_log**：扣费明细记录
+2. **account_balance_audit**：资金变动流水
+3. **account_balance**：账户快照（可延迟）
+4. **balance_sync_log**：同步日志和对账依据

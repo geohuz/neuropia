@@ -1,9 +1,9 @@
 // neuropia_api_gateway/src/services/configService.js
-const postgrest = require('../clients/postgrest');
-const RedisService = require('@shared/clients/redis_op');
-const schemaValidator = require('../validation/schemaValidator');
-const pricingCacheManager = require('./pricingCacheManager');
-const CACHE_KEYS = require('../constants/cacheKeys');
+const postgrest = require("@shared/clients/postgrest");
+const RedisService = require("@shared/clients/redis_op");
+const schemaValidator = require("../validation/schemaValidator");
+const pricingCacheManager = require("./pricingCacheManager");
+const CACHE_KEYS = require("../constants/cacheKeys");
 
 class ConfigService {
   /**
@@ -12,7 +12,7 @@ class ConfigService {
   static async getAllConfigs(userContext, requestBody) {
     try {
       const { virtual_key } = userContext;
-      console.log('获取完整配置:', { virtual_key });
+      console.log("获取完整配置:", { virtual_key });
 
       // ----------------------
       // 1. 获取 virtual_key 配置
@@ -22,10 +22,10 @@ class ConfigService {
       // 验证和补全 metadata
       const validatedConfig = this.validateMetadata(computedConfig);
 
-      console.log('配置获取完成');
-      return validatedConfig
+      console.log("配置获取完成");
+      return validatedConfig;
     } catch (error) {
-      console.error('配置获取失败:', error);
+      console.error("配置获取失败:", error);
       throw error;
     }
   }
@@ -41,15 +41,15 @@ class ConfigService {
     // ----------------------
     const cached = await RedisService.kv.get(cacheKey);
     if (cached) {
-      console.log('配置缓存命中:', virtualKey);
+      console.log("配置缓存命中:", virtualKey);
       return JSON.parse(cached);
     }
 
     // ----------------------
     // 2. 调用数据库 RPC 查询配置
     // ----------------------
-    const { data, error } = await postgrest.rpc('get_virtualkey_config', {
-      p_virtual_key: virtualKey
+    const { data, error } = await postgrest.rpc("get_virtualkey_config", {
+      p_virtual_key: virtualKey,
     });
     if (error) throw error;
 
@@ -61,8 +61,12 @@ class ConfigService {
     // ----------------------
     // 4. 写入缓存（TTL: 300 秒）
     // ----------------------
-    await RedisService.kv.setex(cacheKey, 300, JSON.stringify(configWithApiKeys));
-    console.log('配置缓存写入:', virtualKey);
+    await RedisService.kv.setex(
+      cacheKey,
+      300,
+      JSON.stringify(configWithApiKeys),
+    );
+    console.log("配置缓存写入:", virtualKey);
 
     return configWithApiKeys;
   }
@@ -75,7 +79,7 @@ class ConfigService {
       computedConfig.metadata = schemaValidator.generateDefaultConfig();
     } else {
       computedConfig.metadata = schemaValidator.validateComplete(
-        computedConfig.metadata
+        computedConfig.metadata,
       );
     }
     return computedConfig;
@@ -85,22 +89,22 @@ class ConfigService {
    * 降级配置（当上游不可用时）
    */
   static getFallbackConfig(userContext, requestBody) {
-    console.warn('使用降级配置');
+    console.warn("使用降级配置");
 
     return {
       strategy: {
-        mode: "fallback"
+        mode: "fallback",
       },
       targets: [
         {
           provider: "dashscope",
           override_params: {
             model: requestBody.model || "qwen-turbo",
-            max_tokens: 2000
-          }
-        }
+            max_tokens: 2000,
+          },
+        },
       ],
-      metadata: schemaValidator.generateDefaultConfig()
+      metadata: schemaValidator.generateDefaultConfig(),
     };
   }
 
@@ -111,16 +115,16 @@ class ConfigService {
     const providerKeys = {
       openai: process.env.OPENAI_API_KEY,
       anthropic: process.env.ANTHROPIC_API_KEY,
-      dashscope: process.env.DASHSCOPE_API_KEY
+      dashscope: process.env.DASHSCOPE_API_KEY,
     };
 
     function processTargets(targets) {
-      return targets.map(target => {
+      return targets.map((target) => {
         // 递归处理嵌套 targets
         if (target.targets) {
           return {
             ...target,
-            targets: processTargets(target.targets)
+            targets: processTargets(target.targets),
           };
         }
 
@@ -128,7 +132,7 @@ class ConfigService {
         if (target.provider && !target.api_key) {
           return {
             ...target,
-            api_key: providerKeys[target.provider]
+            api_key: providerKeys[target.provider],
           };
         }
 
@@ -138,11 +142,11 @@ class ConfigService {
 
     return {
       ...config,
-      targets: processTargets(config.targets || [])
+      targets: processTargets(config.targets || []),
     };
   }
 }
 
 module.exports = {
-  ConfigService
+  ConfigService,
 };
