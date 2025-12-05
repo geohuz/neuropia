@@ -1,38 +1,40 @@
 // neuropia_api_gateway/src/services/schedulerService.js
 const StreamService = require("./streamService");
+const CONFIG = require("@shared/config").streaming.scheduler;
 
 class SchedulerService {
   // 🔴 集中所有常量在这里
-  static CONFIG = {
-    // 时间间隔（毫秒）
-    intervals: {
-      cleanup: 60 * 60 * 1000, // 1小时清理一次
-      monitoring: 5 * 60 * 1000, // 5分钟监控一次
-      initialDelay: 30 * 60 * 1000, // 首次清理延迟30分钟
-    },
+  // static CONFIG = {
+  //   // 时间间隔（毫秒）
+  //   intervals: {
+  //     cleanup: 60 * 60 * 1000, // 1小时清理一次
+  //     monitoring: 5 * 60 * 1000, // 5分钟监控一次
+  //     initialDelay: 30 * 60 * 1000, // 首次清理延迟30分钟
+  //   },
 
-    // 清理配置
-    cleanup: {
-      maxAgeHours: 24, // 清理24小时前的消息
-      maxPerShard: 1000, // 每次最多清理1000条/分片
-    },
+  //   // 清理配置
+  //   cleanup: {
+  //     maxAgeHours: 24, // 清理24小时前的消息
+  //     maxPerShard: 1000, // 每次最多清理1000条/分片
+  //   },
 
-    // 监控阈值
-    thresholds: {
-      backlog: 50000, // 积压超过5万条报警
-      shardImbalance: 10, // 分片不均衡超过10倍
-    },
+  //   // 监控阈值
+  //   thresholds: {
+  //     backlog: 50000, // 积压超过5万条报警
+  //     shardImbalance: 10, // 分片不均衡超过10倍
+  //   },
 
-    // 报警配置
-    alerts: {
-      enabled: false, // TODO: 启用报警
-      levels: ["warning", "critical"],
-    },
-  };
+  //   // 报警配置
+  //   alerts: {
+  //     enabled: false, // TODO: 启用报警
+  //     levels: ["warning", "critical"],
+  //   },
+  // };
 
   constructor() {
     this.intervals = new Map();
     this.isRunning = false;
+    this.config = CONFIG;
   }
 
   /**
@@ -77,7 +79,7 @@ class SchedulerService {
    */
   _startStreamCleanup() {
     const TASK_NAME = "stream_cleanup";
-    const config = SchedulerService.CONFIG;
+    const config = this.config;
 
     // 延迟执行第一次清理
     setTimeout(() => {
@@ -98,7 +100,7 @@ class SchedulerService {
    */
   async _executeStreamCleanup() {
     const startTime = Date.now();
-    const config = SchedulerService.CONFIG;
+    const config = this.config;
 
     try {
       console.log("🧹 开始清理Stream旧消息...");
@@ -127,7 +129,7 @@ class SchedulerService {
    */
   _startStreamMonitoring() {
     const TASK_NAME = "stream_monitoring";
-    const config = SchedulerService.CONFIG;
+    const config = this.config;
 
     // 立即执行一次监控
     this._executeStreamMonitoring();
@@ -146,7 +148,7 @@ class SchedulerService {
    */
   async _executeStreamMonitoring() {
     const startTime = Date.now();
-    const config = SchedulerService.CONFIG;
+    const config = this.config;
 
     try {
       console.log("📊 检查Stream状态...");
@@ -177,7 +179,7 @@ class SchedulerService {
    */
   _checkStreamAlerts(stats) {
     const alerts = [];
-    const config = SchedulerService.CONFIG;
+    const config = this.config;
 
     // 1. 消息积压过多
     if (stats.total_messages > config.thresholds.backlog) {
@@ -223,7 +225,7 @@ class SchedulerService {
       is_running: this.isRunning,
       active_tasks: Array.from(this.intervals.keys()),
       task_count: this.intervals.size,
-      config: SchedulerService.CONFIG, // 返回配置供调试
+      config: this.config, // 返回配置供调试
     };
   }
 }
