@@ -951,3 +951,77 @@ for each customer_type:
 - **帮你画 UI 原型图**
 - **帮你写一次性批量 upsert 的事务 SQL**
 
+好问题！这是个**重要的设计细节**。让我分析为什么会有两个不同的视图：
+
+## 🎯 **两个视图的用途对比**：
+
+| 视图                   | 用途                     | 使用者                | 关键字段                                                     |
+| ---------------------- | ------------------------ | --------------------- | ------------------------------------------------------------ |
+| **`billing_accounts`** | **扣费时的完整账户信息** | `chargeForUsage`      | `virtual_key`, `account_id`, `account_balance_id`, `account_type`, `balance` |
+| **`account_balances`** | **纯粹的余额查询**       | `_ensureBalanceCache` | `id`, `owner_userid`, `owner_tenantid`, `balance`            |
+
+## 🔄 **实际使用场景**：
+
+### 1. **`billing_accounts` 用于扣费流程**：
+```javascript
+// 场景：用户调用API，需要扣费
+async chargeForUsage(virtualKey, provider, model, usage) {
+  // 1. 通过 virtual_key 找到账户
+  const accountInfo = await this._getAccountInfo(virtualKey);
+  // 返回：{
+  //   id: account_balance_id,      // 技术ID（用于Stream）
+  //   account_owner_id: user_123,   // 业务ID（用于chargeUser）
+  //   type: 'user',
+  //   balance: 100.00
+  // }
+}
+```
+**为什么需要这个视图**：因为扣费时只知道 `virtual_key`，需要通过它找到对应的账户。
+
+### 2. **`account_balances` 用于缓存回填**：
+```javascript
+// 场景：Redis缓存失效，需要从数据库重新加载余额
+async _ensureBalanceCache(accountOwnerId, accountType) {
+  // 已经知道业务ID（user_123）和类型（user）
+  // 直接查余额表
+  const { data } = await postgrest
+    .from("account_balances")
+    .select("*")
+    .eq(accountType === "tenant" ? "owner_tenantid" : "owner_userid", accountOwnerId)
+    .single();
+  // 返回：{
+  //   id: uuid-account-balance-123,
+  //   owner_userid: user_123,
+  //   balance: 100.00
+  // }
+}
+```
+**为什么需要这个视图**：缓存失效时，已知业务ID，直接查简单的余额信息。
+
+## 🎨 **设计哲学**：
+
+### **`billing_accounts` = "我知道virtual_key，找账户"**
+```sql
+-- 多表连接：virtual_key → user_profile → tenant → account_balance
+-- 返回完整上下文
+```
+
+### **`account_balances` = "我知道user_id/tenant_id，查余额"**
+```sql
+-- 单表查询：直接查 account_balance
+-- 返回精简数据
+```
+
+## 💡 **为什么不用同一个视图？**
+
+1. **性能**：`billing_accounts` 需要多表join，更重
+2. **场景**：`_ensureBalanceCache` 不需要 `virtual_key` 等信息
+3. **清晰**：每个视图职责单一
+
+## ✅ **总结**：
+
+这是一个**很好的设计**：
+- `billing_accounts`：为扣费流程量身定制
+- `account_balances`：为缓存回填优化
+
+两者配合，既满足了业务需求，又考虑了性能。你的系统设计得很合理！

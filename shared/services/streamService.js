@@ -250,7 +250,7 @@ async function cleanupOldMessages(maxAgeHours = 24, maxPerShard = 1000) {
         "-",
         "+",
         "COUNT",
-        1,
+        "1",
       ]);
       if (!firstEntry || firstEntry.length === 0) {
         continue; // 空Stream
@@ -323,7 +323,7 @@ async function getStreamStats() {
           "-",
           "+",
           "COUNT",
-          1,
+          "1",
         ]);
         const lastEntry = await client.sendCommand([
           "XREVRANGE",
@@ -331,7 +331,7 @@ async function getStreamStats() {
           "+",
           "-",
           "COUNT",
-          1,
+          "1",
         ]);
 
         let oldestTime = null;

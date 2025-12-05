@@ -24,11 +24,19 @@ const CONFIG = {
   enableDeadLetter: false, // TODO: 死信队列
 };
 
+// 🎯 添加全局控制标志
+let shouldStopConsuming = false;
+let isConsuming = false;
+
 /**
  * 启动Stream消费者
  */
 async function startStreamConsumer(userConfig = {}) {
   const config = { ...CONFIG, ...userConfig };
+
+  // 重置停止标志
+  shouldStopConsuming = false;
+  isConsuming = true;
 
   console.log("🚀 启动Stream消费者:", {
     consumerGroup: config.consumerGroup,
@@ -51,8 +59,10 @@ async function startStreamConsumer(userConfig = {}) {
     await consumeLoop(config);
   } catch (error) {
     console.error("❌ Stream消费者启动失败:", error);
-    // TODO: 发送报警
+    isConsuming = false;
     throw error;
+  } finally {
+    isConsuming = false;
   }
 }
 
@@ -93,15 +103,29 @@ async function initConsumerGroups(config) {
 async function consumeLoop(config) {
   console.log("🔄 进入消费循环...");
 
-  while (true) {
+  let loopCounter = 0;
+
+  while (!shouldStopConsuming) {
+    loopCounter++;
     let messages = [];
     let shardIndex = null;
 
     try {
+      // 🎯 定期记录心跳（每100次循环）
+      if (loopCounter % 100 === 0) {
+        console.log(`❤️  消费循环心跳: ${loopCounter}次`);
+      }
+
       // 1. 读取消息（轮询所有分片）
       const readResult = await readMessagesFromStreams(config);
       messages = readResult.messages;
       shardIndex = readResult.shardIndex;
+
+      // 🎯 检查是否应该停止
+      if (shouldStopConsuming) {
+        console.log("🛑 收到停止信号，退出消费循环");
+        break;
+      }
 
       if (messages.length === 0) {
         // 没有消息，短暂休眠
@@ -134,6 +158,19 @@ async function consumeLoop(config) {
       // TODO: 监控 - 记录处理延迟
       // metrics.timing('stream.processing.latency', processResult.duration);
     } catch (error) {
+      // 🎯 在这里处理错误，而不是让它们变成未捕获异常
+      console.error("❌ 消费循环内部错误:", {
+        message: error.message,
+        stack: error.stack,
+        loopCount: loopCounter,
+      });
+
+      // 🎯 检查是否应该停止
+      if (shouldStopConsuming) {
+        console.log("🛑 收到停止信号，退出消费循环");
+        break;
+      }
+
       console.error("❌ 消费循环错误:", error);
 
       // TODO: 错误分类处理
@@ -149,6 +186,8 @@ async function consumeLoop(config) {
       await sleep(config.retryDelay);
     }
   }
+
+  console.log("✅ 消费循环已停止");
 }
 
 /**
@@ -159,6 +198,11 @@ async function readMessagesFromStreams(config) {
 
   // 轮询所有分片，直到找到有消息的分片
   for (let shardIndex = 0; shardIndex < config.numShards; shardIndex++) {
+    // 🎯 检查是否应该停止
+    if (shouldStopConsuming) {
+      return { messages: [], shardIndex: null };
+    }
+
     const streamKey = `${config.streamPrefix}:${shardIndex}`;
 
     try {
@@ -185,7 +229,35 @@ async function readMessagesFromStreams(config) {
         }
       }
     } catch (error) {
-      console.error(`❌ 读取分片 ${shardIndex} 失败:`, error.message);
+      // 🎯 检查是否应该停止
+      if (shouldStopConsuming) {
+        return { messages: [], shardIndex: null };
+      }
+
+      // 🎯 处理NOGROUP错误：如果stream不存在，尝试创建
+      if (
+        error.message.includes("NOGROUP") ||
+        error.message.includes("no such key")
+      ) {
+        console.warn(`⚠️ Stream不存在，尝试创建: ${streamKey}`);
+        try {
+          await client.sendCommand([
+            "XGROUP",
+            "CREATE",
+            streamKey,
+            config.consumerGroup,
+            "0",
+            "MKSTREAM",
+          ]);
+          console.log(`✅ 重新创建Stream: ${streamKey}`);
+        } catch (createError) {
+          if (!createError.message.includes("BUSYGROUP")) {
+            console.error(`❌ 创建Stream失败: ${createError.message}`);
+          }
+        }
+      } else {
+        console.error(`❌ 读取分片 ${shardIndex} 失败:`, error.message);
+      }
       // 继续尝试下一个分片
     }
   }
@@ -336,6 +408,11 @@ async function acknowledgeMessages(shardIndex, messageIds, config) {
   try {
     // 批量发送ACK
     for (const messageId of messageIds) {
+      // 🎯 检查是否应该停止
+      if (shouldStopConsuming) {
+        console.log("🛑 停止过程中，跳过剩余ACK");
+        break;
+      }
       await client.sendCommand([
         "XACK",
         streamKey,
@@ -396,20 +473,40 @@ function sleep(ms) {
 }
 
 /**
- * 停止消费者（预留接口）
+ * 停止消费者
  */
 async function stopConsumer() {
   console.log("🛑 停止Stream消费者...");
-  // TODO: 实现优雅关闭
-  // 1. 停止消费循环
-  // 2. 完成正在处理的批次
-  // 3. 发送所有ACK
-  // 4. 清理资源
+
+  if (!isConsuming) {
+    console.log("ℹ️ Stream消费者未运行");
+    return;
+  }
+
+  // 1. 设置停止标志
+  shouldStopConsuming = true;
+
+  // 2. 等待消费循环停止（最多10秒）
+  const maxWaitTime = 10000;
+  const startWait = Date.now();
+
+  while (isConsuming && Date.now() - startWait < maxWaitTime) {
+    console.log("⏳ 等待消费循环停止...");
+    await sleep(500);
+  }
+
+  if (isConsuming) {
+    console.warn("⚠️ 消费循环未在10秒内停止，可能卡住了");
+  } else {
+    console.log("✅ Stream消费者已停止");
+  }
+
+  return true;
 }
 
 module.exports = {
   startStreamConsumer,
-  stopConsumer, // 预留
+  stopConsumer,
   // 导出配置供测试
   CONFIG,
 };

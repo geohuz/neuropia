@@ -8,6 +8,13 @@ const StreamService = require("@shared/services/streamService");
 const logger = require("@shared/utils/logger"); // 导入
 
 class BalanceService {
+  /**
+   * 获取账户信息
+   * @returns {Object} 账户信息
+   *   - id: account_balance.id (技术ID，用于外键约束) ✅
+   *   - account_owner_id: user_id 或 tenant_id (业务ID)
+   *   - type: 'user' 或 'tenant'
+   */
   constructor() {
     this.initialized = false;
     this.pricingManager = pricingCacheManager;
@@ -23,9 +30,9 @@ class BalanceService {
         try {
           await this.handleBalanceChange(payload);
         } catch (error) {
-          logger.error("handleBalanceChange失败", { 
-            payload, 
-            error: error.message 
+          logger.error("handleBalanceChange失败", {
+            payload,
+            error: error.message,
           });
         }
       },
@@ -44,7 +51,7 @@ class BalanceService {
     logger.info(`余额变动: ${account_type}:${account_id}`, {
       old_balance,
       new_balance,
-      delta: new_balance - old_balance
+      delta: new_balance - old_balance,
     });
 
     // 1. 更新Redis缓存
@@ -133,7 +140,7 @@ class BalanceService {
       logger.error("customer_type_id不匹配", {
         virtualKey,
         account_ct_id: accountCtId,
-        pricing_ct_id: pricingCtId
+        pricing_ct_id: pricingCtId,
       });
       // ✅ 记录但不抛出，继续执行
     }
@@ -141,7 +148,8 @@ class BalanceService {
     return {
       virtual_key: virtualKey,
       account: {
-        id: account.id,
+        id: account.id, // 技术ID (account_balance.id)
+        account_owner_id: account.account_owner_id,
         type: account.type,
         customer_type_id: accountCtId,
         balance: account.balance,
@@ -159,7 +167,25 @@ class BalanceService {
   }
 
   /**
-   * 获取账户信息
+   * 通过 virtual_key 获取扣费账户信息
+   *
+   * 重要说明：
+   * 1. 使用 billing_accounts 视图，该视图通过多表连接提供完整的账户上下文：
+   *    virtual_key → user_profile → tenant → account_balance
+   *
+   * 2. 返回的账户信息包含两个关键ID：
+   *    - id: account_balance.id（技术ID，用于数据库外键约束）
+   *    - account_owner_id: user_id 或 tenant_id（业务ID，用于Redis缓存和查询）
+   *
+   * 3. 为什么需要两个ID？
+   *    - 数据库表 usage_log.account_id 外键关联 account_balance.id（技术ID）
+   *    - 但 Redis 缓存 key 和很多查询逻辑使用 user_id/tenant_id（业务ID）
+   *
+   * 4. 缓存策略：频繁查询，因为每次扣费都需要此信息
+   *
+   * @param {string} virtualKey - 虚拟密钥
+   * @returns {Object} 包含技术ID和业务ID的账户信息
+   * @throws {Error} 如果账户不存在或查询失败
    */
   async _getAccountInfo(virtualKey) {
     const redisKey = CACHE_KEYS.BILLING_ACCOUNT(virtualKey);
@@ -190,7 +216,8 @@ class BalanceService {
     }
 
     const result = {
-      id: accountData.account_id,
+      id: accountData.account_balance_id, // ✅ account_balacne.id
+      account_owner_id: accountData.account_id, // ✅ user_id, tenant_id
       type: accountData.account_type,
       customer_type_id: accountData.customer_type_id,
       balance: accountData.balance,
@@ -219,14 +246,19 @@ class BalanceService {
 
     let cost = 0;
     if (priceInfo.pricing_model === "per_token" && priceInfo.price_per_token) {
-      const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      const totalTokens =
+        (usage.input_tokens || 0) + (usage.output_tokens || 0);
       cost = totalTokens * priceInfo.price_per_token;
-    } else if (priceInfo.price_per_input_token && priceInfo.price_per_output_token) {
+    } else if (
+      priceInfo.price_per_input_token &&
+      priceInfo.price_per_output_token
+    ) {
       cost =
         (usage.input_tokens || 0) * priceInfo.price_per_input_token +
         (usage.output_tokens || 0) * priceInfo.price_per_output_token;
     } else if (priceInfo.price_per_token) {
-      const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      const totalTokens =
+        (usage.input_tokens || 0) + (usage.output_tokens || 0);
       cost = totalTokens * priceInfo.price_per_token;
     } else {
       const error = new Error("无效的价格模型");
@@ -254,8 +286,13 @@ class BalanceService {
       const context = await this.getBillingContext(virtualKey);
 
       // 2. 计算费用（错误自然抛出）
-      const calculation = await this.calculateCost(virtualKey, provider, model, usage);
-      
+      const calculation = await this.calculateCost(
+        virtualKey,
+        provider,
+        model,
+        usage,
+      );
+
       // 调试用：检查currency
       if (!calculation.currency) {
         logger.warn("currency字段缺失，使用默认值", { virtualKey });
@@ -266,23 +303,24 @@ class BalanceService {
 
       // 3. 执行扣费（错误自然抛出）
       const chargeResult = await this.chargeUser(
-        context.account.id,
+        context.account.account_owner_id,
         context.account.type,
         cost,
       );
 
       // 4. 扣费成功，异步写入Stream
       if (chargeResult.ok) {
-        logger.info("扣费成功", { 
-          virtualKey, 
+        logger.info("扣费成功", {
+          virtualKey,
           account: `${context.account.type}:${context.account.id}`,
           cost,
-          new_balance: chargeResult.new_balance
+          new_balance: chargeResult.new_balance,
         });
 
         // ✅ 异步写入，不阻塞主流程
         this._writeToStreamInBackground({
           account_id: context.account.id,
+          account_owner_id: context.account.account_owner_id, // ✅ 业务ID（便于追溯）
           account_type: context.account.type,
           virtual_key: virtualKey,
           cost: cost,
@@ -291,17 +329,16 @@ class BalanceService {
           model: model,
           input_tokens: usage.input_tokens || 0,
           output_tokens: usage.output_tokens || 0,
-        }).catch(err => {
+        }).catch((err) => {
           // Stream失败只记录，不影响主流程
           logger.error("Stream写入失败（不影响扣费）", {
             virtualKey,
-            error: err.message
+            error: err.message,
           });
         });
       }
 
       return { ...chargeResult, cost };
-
     } catch (error) {
       // ✅ 边界处记录完整错误信息
       logger.error("扣费失败", {
@@ -310,9 +347,9 @@ class BalanceService {
         model,
         error: error.message,
         stack: error.stack, // ✅ 关键：保留堆栈
-        context: error.context // ✅ 如果有额外上下文
+        context: error.context, // ✅ 如果有额外上下文
       });
-      
+
       // 重新抛出，让上层（API层）处理
       throw error;
     }
@@ -398,6 +435,31 @@ class BalanceService {
     return result;
   }
 
+  /**
+   * 确保Redis缓存中有余额数据（缓存未命中时的回填机制）
+   *
+   * 重要说明：
+   * 1. 使用 account_balances 视图，该视图是 account_balance 表的简化版，
+   *    仅暴露 id、owner_userid、owner_tenantid、balance 等核心字段
+   *
+   * 2. 此方法仅在缓存未命中时调用：
+   *    - chargeUser 的 Lua 脚本返回 "BALANCE_NOT_FOUND" 错误时
+   *    - 或其他需要确保余额数据可用的场景
+   *
+   * 3. 查询逻辑：按业务ID查询（owner_userid 或 owner_tenantid）
+   *    注意：不要按 account_balance.id 查询，因为：
+   *    - Redis 缓存 key 是基于业务ID构建的
+   *    - PostgreSQL 通知使用业务ID
+   *    - 保持系统一致性
+   *
+   * 4. 性能注意：这是保底路径，正常情况应从缓存读取。
+   *    如果频繁调用，说明缓存策略有问题。
+   *
+   * @param {string} accountOwnerId - 业务ID（user_id 或 tenant_id）
+   * @param {string} accountType - 账户类型 'user' 或 'tenant'
+   * @returns {Object} 余额数据
+   * @throws {Error} 如果账户不存在或查询失败
+   */
   async _ensureBalanceCache(accountId, accountType) {
     const key = CACHE_KEYS.BALANCE(accountType, accountId);
 
@@ -434,7 +496,7 @@ class BalanceService {
       CACHE_KEYS.TTL.BALANCE,
       JSON.stringify(balanceData),
     );
-    
+
     return balanceData;
   }
 }
