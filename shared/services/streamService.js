@@ -37,7 +37,7 @@ function getShardKey(accountId) {
 
 // 构建Redis XADD命令参数
 function buildXAddArgs(streamKey, message) {
-  return [
+  const args = [
     "XADD",
     streamKey,
     "MAXLEN",
@@ -69,6 +69,16 @@ function buildXAddArgs(streamKey, message) {
     "timestamp",
     message.timestamp,
   ];
+
+  // 🆕 添加余额信息
+  if (message.balance_before !== undefined) {
+    args.push("balance_before", message.balance_before.toString());
+  }
+  if (message.balance_after !== undefined) {
+    args.push("balance_after", message.balance_after.toString());
+  }
+
+  return args;
 }
 
 // ----------------------------
@@ -96,6 +106,9 @@ async function writeDeduction(deductionData) {
       output_tokens: deductionData.output_tokens || 0,
       total_tokens: deductionData.total_tokens || 0,
       timestamp: deductionData.timestamp || new Date().toISOString(),
+      // 🆕 新增余额字段
+      balance_before: deductionData.balance_before,
+      balance_after: deductionData.balance_after,
     };
 
     const client = await RedisService.connect();

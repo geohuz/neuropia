@@ -314,7 +314,8 @@ class BalanceService {
           virtualKey,
           account: `${context.account.type}:${context.account.id}`,
           cost,
-          new_balance: chargeResult.new_balance,
+          balance_before: context.account.balance, // 🆕 添加
+          balance_after: chargeResult.new_balance,
         });
 
         // 先提取 input/output tokens
@@ -338,6 +339,8 @@ class BalanceService {
           input_tokens: inputTokens,
           output_tokens: outputTokens,
           total_tokens: totalTokens,
+          balance_before: context.account.balance, // 扣费前的余额
+          balance_after: chargeResult.new_balance, // 扣费后的余额
         }).catch((err) => {
           // Stream失败只记录，不影响主流程
           logger.error("Stream写入失败（不影响扣费）", {
@@ -409,6 +412,8 @@ class BalanceService {
         return cjson.encode({ err = "INVALID_BALANCE_FORMAT" })
       end
 
+      local balance_before = bal.balance -- 🆕 记录扣费前余额
+
       if bal.balance < charge then
         return cjson.encode({
           err = "INSUFFICIENT_BALANCE",
@@ -423,6 +428,7 @@ class BalanceService {
       return cjson.encode({
         ok = true,
         new_balance = bal.balance,
+        balance_before = balance_before,  -- 🆕 返回扣费前余额
         charged = charge
       })
     `;

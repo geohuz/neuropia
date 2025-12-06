@@ -330,21 +330,49 @@ async function processMessageBatch(messages, config) {
 
   try {
     // 1. 转换为dbWriter需要的格式
-    const dbMessages = messages.map((msg) => ({
-      deduction_id: msg.deduction_id,
-      virtual_key: msg.virtual_key,
-      account_id: msg.account_id,
-      account_type: msg.account_type,
-      provider: msg.provider,
-      model: msg.model,
-      cost: parseFloat(msg.cost),
-      currency: msg.currency || "USD",
-      input_tokens: parseInt(msg.input_tokens) || 0,
-      output_tokens: parseInt(msg.output_tokens) || 0,
-      total_tokens: parseInt(msg.total_tokens) || 0,
-      timestamp: msg.timestamp,
-      metadata: msg.metadata || {},
-    }));
+    const dbMessages = messages.map((msg) => {
+      // 🎯 调试：检查原始消息是否有余额字段
+      console.log("🔍 Stream消息字段检查:", {
+        deduction_id: msg.deduction_id,
+        has_balance_before: "balance_before" in msg,
+        has_balance_after: "balance_after" in msg,
+        balance_before_value: msg.balance_before,
+        balance_after_value: msg.balance_after,
+        // 显示所有字段便于调试
+        all_fields: Object.keys(msg).filter(
+          (f) => !f.includes("messageId") && f !== "shardIndex",
+        ),
+      });
+
+      return {
+        deduction_id: msg.deduction_id,
+        virtual_key: msg.virtual_key,
+        account_id: msg.account_id,
+        account_type: msg.account_type,
+        provider: msg.provider,
+        model: msg.model,
+        cost: parseFloat(msg.cost),
+        currency: msg.currency || "USD",
+        input_tokens: parseInt(msg.input_tokens) || 0,
+        output_tokens: parseInt(msg.output_tokens) || 0,
+        total_tokens: parseInt(msg.total_tokens) || 0,
+        timestamp: msg.timestamp,
+        metadata: msg.metadata || {},
+        // 🎯 关键修复：添加余额字段
+        balance_before:
+          msg.balance_before !== undefined
+            ? typeof msg.balance_before === "number"
+              ? msg.balance_before
+              : parseFloat(msg.balance_before)
+            : null,
+        balance_after:
+          msg.balance_after !== undefined
+            ? typeof msg.balance_after === "number"
+              ? msg.balance_after
+              : parseFloat(msg.balance_after)
+            : null,
+      };
+    });
 
     // 2. 调用dbWriter写入数据库
     const writeResult = await dbWriter.writeDeductionBatch(dbMessages, {
@@ -354,8 +382,6 @@ async function processMessageBatch(messages, config) {
 
     // 3. 收集处理成功的消息ID
     for (const msg of messages) {
-      // TODO: 需要更精确的成功判断
-      // 目前假设只要在valid_messages中就成功
       processedIds.push(msg.messageId);
     }
 
@@ -374,9 +400,7 @@ async function processMessageBatch(messages, config) {
       });
     }
 
-    console.log(
-      `✅ 处理完成: ${writeResult.written_usage_log} usage + ${writeResult.written_audit_log} audit, 失败: ${failedMessages.length}`,
-    );
+    console.log(`✅ 处理完成: ${writeResult.written_usage_log} usage_log 记录`);
 
     return {
       success: true,
@@ -387,10 +411,6 @@ async function processMessageBatch(messages, config) {
     };
   } catch (error) {
     console.error("❌ 处理消息批次失败:", error);
-
-    // TODO: 错误分类
-    // 临时错误：网络、DB暂时不可用
-    // 永久错误：数据格式问题
 
     return {
       success: false,

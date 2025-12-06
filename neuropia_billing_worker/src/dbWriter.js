@@ -27,7 +27,7 @@ async function writeDeductionBatch(messages, options = {}) {
     valid_messages: 0,
     invalid_messages: 0,
     written_usage_log: 0,
-    written_audit_log: 0,
+    // written_audit_log: 0,
     errors: [],
     start_time: new Date(startTime).toISOString(),
     end_time: null,
@@ -71,15 +71,15 @@ async function writeDeductionBatch(messages, options = {}) {
     const usageLogResult = await insertUsageLogs(client, groupedByAccount);
     result.written_usage_log = usageLogResult.inserted;
 
-    if (usageLogResult.idMap && Object.keys(usageLogResult.idMap).length > 0) {
-      // 6. 批量写入 account_balance_audit
-      const auditLogResult = await insertAuditLogs(
-        client,
-        groupedByAccount,
-        usageLogResult.idMap,
-      );
-      result.written_audit_log = auditLogResult.inserted;
-    }
+    // if (usageLogResult.idMap && Object.keys(usageLogResult.idMap).length > 0) {
+    //   // 6. 批量写入 account_balance_audit
+    //   const auditLogResult = await insertAuditLogs(
+    //     client,
+    //     groupedByAccount,
+    //     usageLogResult.idMap,
+    //   );
+    //   result.written_audit_log = auditLogResult.inserted;
+    // }
 
     // 7. 提交事务（不写daily_summary！）
     await client.query("COMMIT");
@@ -87,7 +87,8 @@ async function writeDeductionBatch(messages, options = {}) {
     console.log(`✅ 批次 ${batchId} 处理完成:
       有效消息: ${result.valid_messages}
       usage_log: ${result.written_usage_log}
-      audit_log: ${result.written_audit_log}`);
+    )
+    // audit_log: ${result.written_audit_log}`);
   } catch (error) {
     // 8. 事务失败，回滚
     if (client) {
@@ -122,6 +123,9 @@ async function writeDeductionBatch(messages, options = {}) {
 /**
  * 验证和过滤消息
  */
+/**
+ * 验证和过滤消息
+ */
 function validateAndFilterMessages(messages) {
   const validMessages = [];
   const invalidMessages = [];
@@ -153,6 +157,84 @@ function validateAndFilterMessages(messages) {
         throw new Error(`无效的账户类型: ${msg.account_type}`);
       }
 
+      // 可选字段验证
+      if (
+        msg.input_tokens !== undefined &&
+        (typeof msg.input_tokens !== "number" || msg.input_tokens < 0)
+      ) {
+        throw new Error(`无效的输入token数量: ${msg.input_tokens}`);
+      }
+
+      if (
+        msg.output_tokens !== undefined &&
+        (typeof msg.output_tokens !== "number" || msg.output_tokens < 0)
+      ) {
+        throw new Error(`无效的输出token数量: ${msg.output_tokens}`);
+      }
+
+      if (
+        msg.total_tokens !== undefined &&
+        (typeof msg.total_tokens !== "number" || msg.total_tokens < 0)
+      ) {
+        throw new Error(`无效的总token数量: ${msg.total_tokens}`);
+      }
+
+      // 🆕 余额字段验证
+      if (msg.balance_before !== undefined) {
+        if (typeof msg.balance_before !== "number") {
+          throw new Error(`无效的扣费前余额类型: ${typeof msg.balance_before}`);
+        }
+        if (msg.balance_before < 0) {
+          console.warn(`⚠️ 扣费前余额为负数: ${msg.balance_before}`, {
+            deduction_id: msg.deduction_id,
+            account_id: msg.account_id,
+          });
+        }
+      }
+
+      if (msg.balance_after !== undefined) {
+        if (typeof msg.balance_after !== "number") {
+          throw new Error(`无效的扣费后余额类型: ${typeof msg.balance_after}`);
+        }
+        if (msg.balance_after < 0) {
+          console.warn(`⚠️ 扣费后余额为负数: ${msg.balance_after}`, {
+            deduction_id: msg.deduction_id,
+            account_id: msg.account_id,
+          });
+        }
+      }
+
+      // 🆕 余额逻辑一致性检查（如果两个余额都存在）
+      if (msg.balance_before !== undefined && msg.balance_after !== undefined) {
+        const expectedBalanceAfter = msg.balance_before - msg.cost;
+        const balanceDiff = Math.abs(msg.balance_after - expectedBalanceAfter);
+
+        // 允许小的浮点数误差
+        if (balanceDiff > 0.0001) {
+          console.warn(
+            `⚠️ 余额不一致: before(${msg.balance_before}) - cost(${msg.cost}) = ${expectedBalanceAfter}, but after is ${msg.balance_after}, diff=${balanceDiff}`,
+            {
+              deduction_id: msg.deduction_id,
+              account_id: msg.account_id,
+            },
+          );
+          // 🆕 这里可以选择修正或标记，不抛出错误
+          // 因为可能是并发操作导致的不一致
+        }
+
+        // 如果扣费后余额大于扣费前，发出警告
+        if (msg.balance_after > msg.balance_before) {
+          console.warn(
+            `⚠️ 扣费后余额大于扣费前余额: after(${msg.balance_after}) > before(${msg.balance_before})`,
+            {
+              deduction_id: msg.deduction_id,
+              account_id: msg.account_id,
+              cost: msg.cost,
+            },
+          );
+        }
+      }
+
       // 添加默认值
       const validatedMsg = {
         ...msg,
@@ -164,6 +246,11 @@ function validateAndFilterMessages(messages) {
         currency: msg.currency || "USD",
         timestamp: msg.timestamp || new Date().toISOString(),
         metadata: msg.metadata || {},
+        // 🆕 确保余额字段存在（即使为null）
+        balance_before:
+          msg.balance_before !== undefined ? msg.balance_before : null,
+        balance_after:
+          msg.balance_after !== undefined ? msg.balance_after : null,
       };
 
       validMessages.push(validatedMsg);
@@ -172,7 +259,29 @@ function validateAndFilterMessages(messages) {
         ...msg,
         validation_error: error.message,
       });
+
+      console.error("消息验证失败:", {
+        deduction_id: msg.deduction_id,
+        error: error.message,
+        data: msg,
+      });
     }
+  }
+
+  // 输出验证统计
+  if (invalidMessages.length > 0) {
+    console.warn(
+      `⚠️ 发现 ${invalidMessages.length} 条无效消息，${validMessages.length} 条有效消息`,
+    );
+
+    // 可以按错误类型分类统计
+    const errorStats = {};
+    invalidMessages.forEach((msg) => {
+      const errorType = msg.validation_error.split(":")[0] || "unknown";
+      errorStats[errorType] = (errorStats[errorType] || 0) + 1;
+    });
+
+    console.warn("无效消息错误统计:", errorStats);
   }
 
   return { validMessages, invalidMessages };
@@ -230,7 +339,9 @@ async function insertUsageLogs(client, accountGroups) {
       $${paramIndex++},   -- input_tokens
       $${paramIndex++},   -- output_tokens
       $${paramIndex++},   -- metadata_json
-      $${paramIndex++}    -- sync_status
+      $${paramIndex++},    -- sync_status
+      $${paramIndex++},   -- 🆕 balance_before
+      $${paramIndex++}    -- 🆕 balance_after
     )`);
 
     params.push(
@@ -247,6 +358,8 @@ async function insertUsageLogs(client, accountGroups) {
       msg.output_tokens || 0,
       JSON.stringify(msg.metadata || {}),
       "completed",
+      msg.balance_before || null, // 🆕
+      msg.balance_after || null, // 🆕
     );
   }
 
@@ -254,7 +367,8 @@ async function insertUsageLogs(client, accountGroups) {
     INSERT INTO data.usage_log (
       deduction_id, virtual_key, account_id, account_type,
       provider, model, cost, currency, created_at,
-      input_tokens, output_tokens, metadata_json, sync_status
+      input_tokens, output_tokens, metadata_json, sync_status,
+      balance_before, balance_after  -- 🆕 新增字段
     ) VALUES ${values.join(", ")}
     ON CONFLICT (deduction_id) DO NOTHING
     RETURNING id, deduction_id
@@ -274,80 +388,6 @@ async function insertUsageLogs(client, accountGroups) {
     return { inserted, idMap };
   } catch (error) {
     console.error("插入 usage_log 失败:", error);
-    throw error;
-  }
-}
-
-/**
- * 批量插入 account_balance_audit
- */
-async function insertAuditLogs(client, accountGroups, idMap) {
-  // 收集所有有 usage_log_id 的消息
-  const auditMessages = [];
-
-  for (const group of accountGroups) {
-    for (const msg of group.messages) {
-      const usageLogId = idMap[msg.deduction_id];
-      if (usageLogId) {
-        auditMessages.push({
-          ...msg,
-          usage_log_id: usageLogId,
-        });
-      }
-    }
-  }
-
-  if (auditMessages.length === 0) {
-    return { inserted: 0 };
-  }
-
-  // 构建批量INSERT
-  const values = [];
-  const params = [];
-  let paramIndex = 1;
-
-  for (const msg of auditMessages) {
-    values.push(`(
-      $${paramIndex++},   -- deduction_id
-      $${paramIndex++},   -- account_id
-      $${paramIndex++},   -- account_type
-      $${paramIndex++},   -- amount (扣费为负数)
-      $${paramIndex++},   -- source
-      $${paramIndex++},   -- audit_category
-      $${paramIndex++},   -- usage_log_id
-      $${paramIndex++},   -- created_at
-      $${paramIndex++}    -- sync_status
-    )`);
-
-    params.push(
-      msg.deduction_id,
-      msg.account_id,
-      msg.account_type,
-      -msg.cost, // 扣费为负数
-      "api_gateway",
-      "usage",
-      msg.usage_log_id,
-      msg.timestamp,
-      "completed",
-    );
-  }
-
-  const query = `
-    INSERT INTO data.account_balance_audit (
-      deduction_id, account_id, account_type, amount,
-      source, audit_category, usage_log_id, created_at, sync_status
-    ) VALUES ${values.join(", ")}
-    ON CONFLICT (deduction_id) DO NOTHING
-  `;
-
-  try {
-    const result = await client.query(query, params);
-    const inserted = result.rowCount;
-
-    console.log(`💰 插入 ${inserted} 条 audit 记录`);
-    return { inserted };
-  } catch (error) {
-    console.error("插入 account_balance_audit 失败:", error);
     throw error;
   }
 }
