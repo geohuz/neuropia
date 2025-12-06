@@ -217,7 +217,7 @@ class BalanceService {
 
     const result = {
       id: accountData.account_balance_id, // ✅ account_balacne.id
-      account_owner_id: accountData.account_id, // ✅ user_id, tenant_id
+      account_owner_id: accountData.account_id, // ✅ user_id or tenant_id
       type: accountData.account_type,
       customer_type_id: accountData.customer_type_id,
       balance: accountData.balance,

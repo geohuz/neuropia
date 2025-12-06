@@ -68,6 +68,8 @@ function buildXAddArgs(streamKey, message) {
     message.total_tokens.toString(),
     "timestamp",
     message.timestamp,
+    "account_owner_id",
+    message.account_owner_id?.toString() || message.account_owner_id || "",
   ];
 
   // 🆕 添加余额信息
@@ -109,6 +111,7 @@ async function writeDeduction(deductionData) {
       // 🆕 新增余额字段
       balance_before: deductionData.balance_before,
       balance_after: deductionData.balance_after,
+      account_owner_id: deductionData.account_owner_id,
     };
 
     const client = await RedisService.connect();

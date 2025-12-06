@@ -6,6 +6,8 @@ const logger = require("@shared/utils/logger"); // 假设你创建了logger
 const express = require("express");
 const router = express.Router();
 
+const { handleTestMode } = require("./testModeHandler");
+
 const {
   trackApiRequest,
   trackError,
@@ -29,6 +31,26 @@ router.all("/*", async (req, res) => {
       path: originalPath,
       method: req.method,
     });
+
+    // 🎯 在这里插入测试模式检测
+    const isTestRequest = virtual_key.startsWith("test_vk_");
+
+    if (isTestRequest) {
+      logger.info("测试模式请求", {
+        requestId,
+        virtual_key,
+      });
+
+      // 测试模式：模拟AI响应 + 真实扣费
+      return await handleTestMode(req, res, {
+        requestId,
+        userContext,
+        // portkeyConfig: {},
+        requestBody,
+        // originalPath,
+        startTime,
+      });
+    }
 
     // 1. 获取配置（失败直接抛出）
     let portkeyConfig;

@@ -331,18 +331,14 @@ async function processMessageBatch(messages, config) {
   try {
     // 1. 转换为dbWriter需要的格式
     const dbMessages = messages.map((msg) => {
-      // 🎯 调试：检查原始消息是否有余额字段
-      console.log("🔍 Stream消息字段检查:", {
-        deduction_id: msg.deduction_id,
-        has_balance_before: "balance_before" in msg,
-        has_balance_after: "balance_after" in msg,
-        balance_before_value: msg.balance_before,
-        balance_after_value: msg.balance_after,
-        // 显示所有字段便于调试
-        all_fields: Object.keys(msg).filter(
-          (f) => !f.includes("messageId") && f !== "shardIndex",
-        ),
-      });
+      let user_id = null;
+      let tenant_id = null;
+
+      if (msg.account_type === "user" && msg.account_owner_id) {
+        user_id = msg.account_owner_id;
+      } else if (msg.account_type === "tenant" && msg.account_owner_id) {
+        tenant_id = msg.account_owner_id;
+      }
 
       return {
         deduction_id: msg.deduction_id,
@@ -371,6 +367,8 @@ async function processMessageBatch(messages, config) {
               ? msg.balance_after
               : parseFloat(msg.balance_after)
             : null,
+        user_id: user_id,
+        tenant_id: tenant_id,
       };
     });
 

@@ -338,9 +338,11 @@ async function insertUsageLogs(client, accountGroups) {
       $${paramIndex++},   -- input_tokens
       $${paramIndex++},   -- output_tokens
       $${paramIndex++},   -- metadata_json
-      $${paramIndex++},    -- sync_status
+      $${paramIndex++},   -- sync_status
       $${paramIndex++},   -- 🆕 balance_before
-      $${paramIndex++}    -- 🆕 balance_after
+      $${paramIndex++},   -- 🆕 balance_after
+      $${paramIndex++},   -- 🆕 user_id
+      $${paramIndex++}    -- 🆕 tenant_id
     )`);
 
     params.push(
@@ -359,6 +361,8 @@ async function insertUsageLogs(client, accountGroups) {
       "completed",
       msg.balance_before || null, // 🆕
       msg.balance_after || null, // 🆕
+      msg.user_id || null, // 🆕 直接从msg中取 from dbMessage
+      msg.tenant_id || null, // 🆕 直接从msg中取
     );
   }
 
@@ -367,7 +371,7 @@ async function insertUsageLogs(client, accountGroups) {
       deduction_id, virtual_key, account_id, account_type,
       provider, model, cost, currency, created_at,
       input_tokens, output_tokens, metadata_json, sync_status,
-      balance_before, balance_after  -- 🆕 新增字段
+      balance_before, balance_after, user_id, tenant_id
     ) VALUES ${values.join(", ")}
     ON CONFLICT (deduction_id) DO NOTHING
     RETURNING id, deduction_id
