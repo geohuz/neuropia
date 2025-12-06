@@ -285,6 +285,11 @@ class BalanceService {
       // 1. 获取上下文（错误自然抛出）
       const context = await this.getBillingContext(virtualKey);
 
+      logger.info("chargeForUsage开始", {
+        virtualKey,
+        context_balance: context.account.balance,
+      });
+
       // 2. 计算费用（错误自然抛出）
       const calculation = await this.calculateCost(
         virtualKey,
@@ -310,11 +315,18 @@ class BalanceService {
 
       // 4. 扣费成功，异步写入Stream
       if (chargeResult.ok) {
+        logger.info("余额对比", {
+          virtualKey,
+          context_account_balance: context.account.balance,
+          charge_result_balance_before: chargeResult.balance_before,
+          are_equal: context.account.balance === chargeResult.balance_before,
+          diff: context.account.balance - chargeResult.balance_before,
+        });
         logger.info("扣费成功", {
           virtualKey,
           account: `${context.account.type}:${context.account.id}`,
           cost,
-          balance_before: context.account.balance, // 🆕 添加
+          balance_before: chargeResult.balance_before, // 🆕 添加
           balance_after: chargeResult.new_balance,
         });
 
@@ -339,7 +351,7 @@ class BalanceService {
           input_tokens: inputTokens,
           output_tokens: outputTokens,
           total_tokens: totalTokens,
-          balance_before: context.account.balance, // 扣费前的余额
+          balance_before: chargeResult.balance_before, // 扣费前的余额
           balance_after: chargeResult.new_balance, // 扣费后的余额
         }).catch((err) => {
           // Stream失败只记录，不影响主流程

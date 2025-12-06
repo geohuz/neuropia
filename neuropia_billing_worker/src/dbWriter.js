@@ -86,8 +86,7 @@ async function writeDeductionBatch(messages, options = {}) {
 
     console.log(`✅ 批次 ${batchId} 处理完成:
       有效消息: ${result.valid_messages}
-      usage_log: ${result.written_usage_log}
-    )
+      usage_log: ${result.written_usage_log}`);
     // audit_log: ${result.written_audit_log}`);
   } catch (error) {
     // 8. 事务失败，回滚
