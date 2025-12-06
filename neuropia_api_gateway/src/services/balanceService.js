@@ -315,13 +315,6 @@ class BalanceService {
 
       // 4. 扣费成功，异步写入Stream
       if (chargeResult.ok) {
-        logger.info("余额对比", {
-          virtualKey,
-          context_account_balance: context.account.balance,
-          charge_result_balance_before: chargeResult.balance_before,
-          are_equal: context.account.balance === chargeResult.balance_before,
-          diff: context.account.balance - chargeResult.balance_before,
-        });
         logger.info("扣费成功", {
           virtualKey,
           account: `${context.account.type}:${context.account.id}`,
