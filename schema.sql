@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict ZBDTiQxQqIZQVrJsvlC0s2uKYDURczCZDwoPjynoFurOsn2l6QiVWrAIDJHgBZc
+\restrict H99WEjOI8PQPm7pfnJIHt5Djudp51fbKNkQpdwHevCCwvnoXOVfXCYzfGVmCKBn
 
 -- Dumped from database version 18.1 (Homebrew)
 -- Dumped by pg_dump version 18.1 (Homebrew)
@@ -178,6 +178,89 @@ $$;
 ALTER FUNCTION api.activate_virtual_key(p_virtual_key text, p_reason text) OWNER TO geohuz;
 
 --
+-- Name: admin_set_balance(uuid, text, numeric, uuid, text, uuid); Type: FUNCTION; Schema: api; Owner: geohuz
+--
+
+CREATE FUNCTION api.admin_set_balance(p_account_id uuid, p_account_type text, p_new_balance numeric, p_operator_id uuid, p_reason text, p_trace_id uuid DEFAULT NULL::uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+DECLARE
+    v_old_balance numeric;
+    v_delta numeric;
+BEGIN
+    IF p_account_type = 'user' THEN
+        SELECT balance INTO v_old_balance
+        FROM data.account_balance
+        WHERE owner_userid = p_account_id
+        FOR UPDATE;
+
+        UPDATE data.account_balance
+        SET balance = p_new_balance
+        WHERE owner_userid = p_account_id;
+
+    ELSIF p_account_type = 'tenant' THEN
+        SELECT balance INTO v_old_balance
+        FROM data.account_balance
+        WHERE owner_tenantid = p_account_id
+        FOR UPDATE;
+
+        UPDATE data.account_balance
+        SET balance = p_new_balance
+        WHERE owner_tenantid = p_account_id;
+
+    ELSE
+        RAISE EXCEPTION 'Invalid account_type';
+    END IF;
+
+    v_delta := p_new_balance - v_old_balance;
+
+    -- 写审计
+    INSERT INTO data.account_balance_audit(
+        account_id,
+        account_type,
+        balance_before,
+        balance_after,
+        delta,
+        action,
+        reason,
+        operator_id,
+        trace_id,
+        created_at
+    ) VALUES (
+        p_account_id,
+        p_account_type,
+        v_old_balance,
+        p_new_balance,
+        v_delta,
+        'admin_set',
+        p_reason,
+        p_operator_id,
+        COALESCE(p_trace_id, gen_random_uuid()),
+        now()
+    );
+
+    -- 发 pg_notify
+    PERFORM pg_notify(
+        'account_balance_updated',
+        json_build_object(
+            'account_id', p_account_id,
+            'account_type', p_account_type,
+            'balance', p_new_balance,
+            'delta', v_delta,
+            'action', 'admin_set',
+            'reason', p_reason,
+            'operator_id', p_operator_id,
+            'trace_id', COALESCE(p_trace_id, gen_random_uuid()),
+            'created_at', now()
+        )::text
+    );
+END;
+$$;
+
+
+ALTER FUNCTION api.admin_set_balance(p_account_id uuid, p_account_type text, p_new_balance numeric, p_operator_id uuid, p_reason text, p_trace_id uuid) OWNER TO geohuz;
+
+--
 -- Name: attach_virtualkey(uuid, uuid); Type: FUNCTION; Schema: api; Owner: geohuz
 --
 
@@ -322,6 +405,110 @@ $$;
 
 
 ALTER FUNCTION api.cancel_user(p_user_id uuid, p_reason text) OWNER TO geohuz;
+
+--
+-- Name: change_account_balance(uuid, text, numeric, text, uuid, text, uuid); Type: FUNCTION; Schema: api; Owner: geohuz
+--
+
+CREATE FUNCTION api.change_account_balance(p_account_id uuid, p_account_type text, p_amount numeric, p_action text, p_operator_id uuid, p_reason text, p_trace_id uuid DEFAULT NULL::uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+DECLARE
+    v_old_balance numeric;
+    v_new_balance numeric;
+    v_delta numeric;
+BEGIN
+    -- 参数校验（保持不变）
+    IF p_amount <= 0 THEN
+        RAISE EXCEPTION 'Amount must be positive';
+    END IF;
+
+    IF p_account_type NOT IN ('user', 'tenant') THEN
+        RAISE EXCEPTION 'Invalid account_type';
+    END IF;
+
+    IF p_action NOT IN ('topup', 'deduct') THEN
+        RAISE EXCEPTION 'Invalid action';
+    END IF;
+
+    -- 计算 delta（保持不变）
+    v_delta := CASE 
+                  WHEN p_action = 'topup' THEN p_amount
+                  WHEN p_action = 'deduct' THEN -p_amount
+               END;
+
+    -- 获取当前余额并加锁（保持不变）
+    IF p_account_type = 'user' THEN
+        SELECT balance INTO v_old_balance
+        FROM data.account_balance
+        WHERE owner_userid = p_account_id
+        FOR UPDATE;
+    ELSE
+        SELECT balance INTO v_old_balance
+        FROM data.account_balance
+        WHERE owner_tenantid = p_account_id
+        FOR UPDATE;
+    END IF;
+
+    -- 扣款检查（保持不变）
+    IF p_action = 'deduct' AND v_old_balance < p_amount THEN
+        RAISE EXCEPTION 'Insufficient balance';
+    END IF;
+
+    -- 计算新余额（保持不变）
+    v_new_balance := v_old_balance + v_delta;
+
+    -- 更新余额（保持不变）
+    IF p_account_type = 'user' THEN
+        UPDATE data.account_balance
+        SET balance = v_new_balance
+        WHERE owner_userid = p_account_id;
+    ELSE
+        UPDATE data.account_balance
+        SET balance = v_new_balance
+        WHERE owner_tenantid = p_account_id;
+    END IF;
+
+    -- 写审计（保持不变）
+    INSERT INTO data.account_balance_audit(
+        account_id,
+        account_type,
+        balance_before,
+        balance_after,
+        delta,
+        action,
+        reason,
+        operator_id,
+        trace_id,
+        created_at
+    ) VALUES (
+        p_account_id,
+        p_account_type,
+        v_old_balance,
+        v_new_balance,
+        v_delta,
+        p_action,
+        p_reason,
+        p_operator_id,
+        COALESCE(p_trace_id, gen_random_uuid()),
+        now()
+    );
+
+    -- ✅ 修改：只发送给 BalanceService 的轻量通知
+    PERFORM pg_notify(
+        'account_balance_updated',
+        json_build_object(
+            'account_id', p_account_id::text,
+            'account_type', p_account_type,
+            'old_balance', v_old_balance,
+            'new_balance', v_new_balance
+        )::text
+    );
+END;
+$$;
+
+
+ALTER FUNCTION api.change_account_balance(p_account_id uuid, p_account_type text, p_amount numeric, p_action text, p_operator_id uuid, p_reason text, p_trace_id uuid) OWNER TO geohuz;
 
 --
 -- Name: check_user_access(uuid); Type: FUNCTION; Schema: api; Owner: geohuz
@@ -3468,10 +3655,14 @@ CREATE FUNCTION data.notify_customer_type_rate_update() RETURNS trigger
 DECLARE 
   ct_id uuid;
 BEGIN
-  -- 针对不同操作，NEW 或 OLD 都可能含有 customer_type_id
   ct_id := COALESCE(NEW.customer_type_id, OLD.customer_type_id);
-
-  PERFORM pg_notify('customer_type_rate_update', ct_id::text);
+  
+  -- ✅ 发送JSON格式
+  PERFORM pg_notify(
+    'customer_type_rate_update',
+    json_build_object('customer_type_id', ct_id::text)::text
+  );
+  
   RETURN NEW;
 END;
 $$;
@@ -4238,7 +4429,28 @@ CREATE TABLE data.account_balance (
     owner_userid uuid,
     balance numeric DEFAULT 0,
     overdue_amount numeric DEFAULT 0,
-    owner_tenantid uuid
+    owner_tenantid uuid,
+    updated_at timestamp with time zone DEFAULT now(),
+    account_type character varying(10) GENERATED ALWAYS AS (
+CASE
+    WHEN (owner_userid IS NOT NULL) THEN 'user'::text
+    WHEN (owner_tenantid IS NOT NULL) THEN 'tenant'::text
+    ELSE 'unknown'::text
+END) STORED,
+    sync_version bigint DEFAULT 0,
+    redis_balance numeric,
+    last_redis_sync timestamp without time zone,
+    last_balance_calc timestamp without time zone,
+    total_consumed numeric DEFAULT 0,
+    total_topup numeric DEFAULT 0,
+    total_adjustments numeric DEFAULT 0,
+    credit_limit numeric DEFAULT 0,
+    credit_used numeric DEFAULT 0,
+    status character varying(20) DEFAULT 'active'::character varying,
+    freeze_reason text,
+    balance_version bigint DEFAULT 0,
+    audit_version bigint DEFAULT 0,
+    CONSTRAINT single_owner_check CHECK ((((owner_userid IS NOT NULL) AND (owner_tenantid IS NULL)) OR ((owner_userid IS NULL) AND (owner_tenantid IS NOT NULL))))
 );
 
 
@@ -4399,24 +4611,31 @@ CREATE TABLE data.virtual_key (
 ALTER TABLE data.virtual_key OWNER TO geohuz;
 
 --
--- Name: billing_accounts; Type: VIEW; Schema: api; Owner: geohuz
+-- Name: billing_accounts; Type: VIEW; Schema: api; Owner: api_views_owner
 --
 
 CREATE VIEW api.billing_accounts AS
  SELECT vk.virtual_key,
+    vk.user_id,
+    up.tenant_id,
     COALESCE(up.tenant_id, vk.user_id) AS account_id,
         CASE
             WHEN (up.tenant_id IS NOT NULL) THEN 'tenant'::text
             ELSE 'user'::text
         END AS account_type,
+    COALESCE(t.customer_type_id, up.customer_type_id) AS customer_type_id,
     ab.balance,
-    ab.overdue_amount
-   FROM ((data.virtual_key vk
+    ab.overdue_amount,
+    ab.updated_at,
+    ab.id AS account_balance_id
+   FROM (((data.virtual_key vk
      JOIN data.user_profile up ON ((up.user_id = vk.user_id)))
-     JOIN data.account_balance ab ON (((ab.owner_userid = vk.user_id) OR (ab.owner_tenantid = up.tenant_id))));
+     LEFT JOIN data.tenant t ON ((t.id = up.tenant_id)))
+     JOIN data.account_balance ab ON ((((up.tenant_id IS NULL) AND (ab.owner_userid = vk.user_id)) OR ((up.tenant_id IS NOT NULL) AND (ab.owner_tenantid = up.tenant_id)))))
+  WHERE (vk.is_active = true);
 
 
-ALTER VIEW api.billing_accounts OWNER TO geohuz;
+ALTER VIEW api.billing_accounts OWNER TO api_views_owner;
 
 --
 -- Name: config_types; Type: TABLE; Schema: data; Owner: geohuz
@@ -4784,50 +5003,6 @@ CREATE VIEW api.topup_records AS
 ALTER VIEW api.topup_records OWNER TO api_views_owner;
 
 --
--- Name: usage_log; Type: TABLE; Schema: data; Owner: geohuz
---
-
-CREATE TABLE data.usage_log (
-    id uuid DEFAULT gen_random_uuid() CONSTRAINT usage_logs_id_not_null NOT NULL,
-    user_id uuid,
-    provider text CONSTRAINT usage_logs_provider_not_null NOT NULL,
-    model text CONSTRAINT usage_logs_model_not_null NOT NULL,
-    tokens_used integer CONSTRAINT usage_logs_tokens_used_not_null NOT NULL,
-    cost numeric CONSTRAINT usage_logs_cost_not_null NOT NULL,
-    created_at timestamp without time zone DEFAULT now(),
-    latency_ms integer,
-    input_tokens integer,
-    output_tokens integer,
-    prompt_hash text,
-    config_id uuid,
-    metadata_json jsonb
-);
-
-
-ALTER TABLE data.usage_log OWNER TO geohuz;
-
---
--- Name: usage_logs; Type: VIEW; Schema: api; Owner: api_views_owner
---
-
-CREATE VIEW api.usage_logs AS
- SELECT id,
-    user_id,
-    provider,
-    model,
-    tokens_used,
-    cost,
-    created_at,
-    latency_ms,
-    input_tokens,
-    output_tokens,
-    prompt_hash
-   FROM data.usage_log;
-
-
-ALTER VIEW api.usage_logs OWNER TO api_views_owner;
-
---
 -- Name: api_key; Type: TABLE; Schema: data; Owner: geohuz
 --
 
@@ -4978,6 +5153,29 @@ CREATE TABLE auth.login (
 ALTER TABLE auth.login OWNER TO geohuz;
 
 --
+-- Name: account_balance_audit; Type: TABLE; Schema: data; Owner: geohuz
+--
+
+CREATE TABLE data.account_balance_audit (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    account_id uuid NOT NULL,
+    account_type text NOT NULL,
+    amount numeric NOT NULL,
+    source text,
+    operator_id uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    usage_log_id uuid,
+    deduction_id character varying(100),
+    audit_category character varying(50),
+    sync_status character varying(20) DEFAULT 'completed'::character varying,
+    CONSTRAINT audit_account_type_check CHECK ((account_type = ANY (ARRAY['user'::text, 'tenant'::text, 'system'::text]))),
+    CONSTRAINT audit_category_check CHECK (((audit_category)::text = ANY ((ARRAY['usage'::character varying, 'topup'::character varying, 'adjustment'::character varying, 'refund'::character varying, 'fee'::character varying, 'correction'::character varying])::text[])))
+);
+
+
+ALTER TABLE data.account_balance_audit OWNER TO geohuz;
+
+--
 -- Name: billing_event; Type: TABLE; Schema: data; Owner: geohuz
 --
 
@@ -5013,23 +5211,6 @@ CREATE TABLE data.config_cache_status (
 
 
 ALTER TABLE data.config_cache_status OWNER TO geohuz;
-
---
--- Name: config_levels; Type: TABLE; Schema: data; Owner: geohuz
---
-
-CREATE TABLE data.config_levels (
-    level_name text NOT NULL,
-    display_name text NOT NULL,
-    parent_level text,
-    inherit_priority integer NOT NULL,
-    description text,
-    is_system_level boolean DEFAULT false,
-    created_at timestamp with time zone DEFAULT now()
-);
-
-
-ALTER TABLE data.config_levels OWNER TO geohuz;
 
 --
 -- Name: config_nodes; Type: TABLE; Schema: data; Owner: geohuz
@@ -5084,6 +5265,27 @@ CREATE TABLE data.customer_type_rate (
 ALTER TABLE data.customer_type_rate OWNER TO geohuz;
 
 --
+-- Name: daily_account_summary; Type: TABLE; Schema: data; Owner: geohuz
+--
+
+CREATE TABLE data.daily_account_summary (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    summary_date date NOT NULL,
+    account_id uuid NOT NULL,
+    account_type character varying(10) NOT NULL,
+    request_count integer DEFAULT 0,
+    total_tokens integer DEFAULT 0,
+    total_input_tokens integer DEFAULT 0,
+    total_output_tokens integer DEFAULT 0,
+    total_cost numeric DEFAULT 0,
+    created_at timestamp without time zone DEFAULT now(),
+    updated_at timestamp without time zone DEFAULT now()
+);
+
+
+ALTER TABLE data.daily_account_summary OWNER TO geohuz;
+
+--
 -- Name: gateway_routes; Type: TABLE; Schema: data; Owner: geohuz
 --
 
@@ -5101,43 +5303,6 @@ CREATE TABLE data.gateway_routes (
 
 
 ALTER TABLE data.gateway_routes OWNER TO geohuz;
-
---
--- Name: inheritance_rules; Type: TABLE; Schema: data; Owner: geohuz
---
-
-CREATE TABLE data.inheritance_rules (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    parent_level text NOT NULL,
-    child_level text NOT NULL,
-    config_type text NOT NULL,
-    is_inheritance_enabled boolean DEFAULT true,
-    custom_merge_strategy text,
-    conflict_resolution text DEFAULT 'child_wins'::text,
-    condition_expression jsonb,
-    condition_description text,
-    is_active boolean DEFAULT true,
-    effective_from timestamp with time zone DEFAULT now(),
-    effective_to timestamp with time zone
-);
-
-
-ALTER TABLE data.inheritance_rules OWNER TO geohuz;
-
---
--- Name: merge_strategies; Type: TABLE; Schema: data; Owner: geohuz
---
-
-CREATE TABLE data.merge_strategies (
-    strategy_name text NOT NULL,
-    description text NOT NULL,
-    implementation_function text,
-    is_builtin boolean DEFAULT true,
-    created_at timestamp with time zone DEFAULT now()
-);
-
-
-ALTER TABLE data.merge_strategies OWNER TO geohuz;
 
 --
 -- Name: node_virtual_key_map; Type: TABLE; Schema: data; Owner: geohuz
@@ -5193,6 +5358,72 @@ CREATE TABLE data.rate_limit (
 ALTER TABLE data.rate_limit OWNER TO geohuz;
 
 --
+-- Name: reconciliation_report; Type: TABLE; Schema: data; Owner: geohuz
+--
+
+CREATE TABLE data.reconciliation_report (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    report_date date NOT NULL,
+    report_type character varying(50) NOT NULL,
+    start_time timestamp without time zone NOT NULL,
+    end_time timestamp without time zone NOT NULL,
+    total_accounts integer DEFAULT 0,
+    checked_accounts integer DEFAULT 0,
+    error_accounts integer DEFAULT 0,
+    redis_total_balance numeric DEFAULT 0,
+    db_total_balance numeric DEFAULT 0,
+    balance_diff_total numeric DEFAULT 0,
+    redis_total_consumed numeric DEFAULT 0,
+    db_total_consumed numeric DEFAULT 0,
+    consumed_diff_total numeric DEFAULT 0,
+    accounts_with_diff integer DEFAULT 0,
+    max_diff_amount numeric DEFAULT 0,
+    avg_diff_amount numeric DEFAULT 0,
+    diff_by_type jsonb DEFAULT '{}'::jsonb,
+    report_status character varying(20) DEFAULT 'generating'::character varying,
+    generation_duration_ms integer,
+    generated_by character varying(100) DEFAULT 'system'::character varying,
+    generated_at timestamp without time zone DEFAULT now(),
+    reviewed_by uuid,
+    reviewed_at timestamp without time zone,
+    report_summary text,
+    report_details jsonb,
+    storage_path text
+);
+
+
+ALTER TABLE data.reconciliation_report OWNER TO geohuz;
+
+--
+-- Name: usage_log; Type: TABLE; Schema: data; Owner: geohuz
+--
+
+CREATE TABLE data.usage_log (
+    id uuid DEFAULT gen_random_uuid() CONSTRAINT usage_logs_id_not_null NOT NULL,
+    user_id uuid,
+    provider text CONSTRAINT usage_logs_provider_not_null NOT NULL,
+    model text CONSTRAINT usage_logs_model_not_null NOT NULL,
+    cost numeric CONSTRAINT usage_logs_cost_not_null NOT NULL,
+    created_at timestamp without time zone DEFAULT now(),
+    latency_ms integer,
+    input_tokens integer,
+    output_tokens integer,
+    metadata_json jsonb,
+    deduction_id character varying(100),
+    sync_status character varying(20) DEFAULT 'completed'::character varying,
+    tenant_id uuid,
+    account_id uuid NOT NULL,
+    account_type character varying(10),
+    virtual_key text,
+    currency character varying(3) DEFAULT 'USD'::character varying,
+    balance_before numeric,
+    balance_after numeric
+);
+
+
+ALTER TABLE data.usage_log OWNER TO geohuz;
+
+--
 -- Name: virtual_key_usage; Type: TABLE; Schema: data; Owner: geohuz
 --
 
@@ -5244,6 +5475,22 @@ ALTER TABLE ONLY auth.login
 
 
 --
+-- Name: account_balance_audit account_balance_audit_deduction_id_key; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.account_balance_audit
+    ADD CONSTRAINT account_balance_audit_deduction_id_key UNIQUE (deduction_id);
+
+
+--
+-- Name: account_balance_audit account_balance_audit_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.account_balance_audit
+    ADD CONSTRAINT account_balance_audit_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: account_balance account_balance_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
 --
 
@@ -5292,14 +5539,6 @@ ALTER TABLE ONLY data.config_cache_status
 
 
 --
--- Name: config_levels config_levels_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.config_levels
-    ADD CONSTRAINT config_levels_pkey PRIMARY KEY (level_name);
-
-
---
 -- Name: config_nodes config_nodes_name_key; Type: CONSTRAINT; Schema: data; Owner: geohuz
 --
 
@@ -5340,35 +5579,27 @@ ALTER TABLE ONLY data.customer_type
 
 
 --
+-- Name: daily_account_summary daily_account_summary_account_id_summary_date_key; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.daily_account_summary
+    ADD CONSTRAINT daily_account_summary_account_id_summary_date_key UNIQUE (account_id, summary_date);
+
+
+--
+-- Name: daily_account_summary daily_account_summary_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.daily_account_summary
+    ADD CONSTRAINT daily_account_summary_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: gateway_routes gateway_routes_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
 --
 
 ALTER TABLE ONLY data.gateway_routes
     ADD CONSTRAINT gateway_routes_pkey PRIMARY KEY (id);
-
-
---
--- Name: inheritance_rules inheritance_rules_parent_level_child_level_config_type_key; Type: CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.inheritance_rules
-    ADD CONSTRAINT inheritance_rules_parent_level_child_level_config_type_key UNIQUE (parent_level, child_level, config_type);
-
-
---
--- Name: inheritance_rules inheritance_rules_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.inheritance_rules
-    ADD CONSTRAINT inheritance_rules_pkey PRIMARY KEY (id);
-
-
---
--- Name: merge_strategies merge_strategies_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.merge_strategies
-    ADD CONSTRAINT merge_strategies_pkey PRIMARY KEY (strategy_name);
 
 
 --
@@ -5444,6 +5675,22 @@ ALTER TABLE ONLY data.rate_limit
 
 
 --
+-- Name: reconciliation_report reconciliation_report_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.reconciliation_report
+    ADD CONSTRAINT reconciliation_report_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: reconciliation_report reconciliation_report_report_date_report_type_key; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.reconciliation_report
+    ADD CONSTRAINT reconciliation_report_report_date_report_type_key UNIQUE (report_date, report_type);
+
+
+--
 -- Name: tenant tenant_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
 --
 
@@ -5481,6 +5728,14 @@ ALTER TABLE ONLY data.topup_record
 
 ALTER TABLE ONLY data.api_key
     ADD CONSTRAINT uniq_login_id UNIQUE (login_id);
+
+
+--
+-- Name: usage_log usage_log_deduction_id_key; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.usage_log
+    ADD CONSTRAINT usage_log_deduction_id_key UNIQUE (deduction_id);
 
 
 --
@@ -5570,6 +5825,62 @@ CREATE INDEX gin_portkey_templates_json ON data.portkey_config_templates USING g
 
 
 --
+-- Name: idx_account_balance_audit_account; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_account_balance_audit_account ON data.account_balance_audit USING btree (account_id, account_type);
+
+
+--
+-- Name: idx_account_balance_audit_created_at; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_account_balance_audit_created_at ON data.account_balance_audit USING btree (created_at);
+
+
+--
+-- Name: idx_account_balance_status; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_account_balance_status ON data.account_balance USING btree (status) WHERE ((status)::text <> 'active'::text);
+
+
+--
+-- Name: idx_account_balance_type_tenant; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_account_balance_type_tenant ON data.account_balance USING btree (owner_tenantid) WHERE (owner_tenantid IS NOT NULL);
+
+
+--
+-- Name: idx_account_balance_type_user; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_account_balance_type_user ON data.account_balance USING btree (owner_userid) WHERE (owner_userid IS NOT NULL);
+
+
+--
+-- Name: idx_audit_deduction_id; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_audit_deduction_id ON data.account_balance_audit USING btree (deduction_id) WHERE (deduction_id IS NOT NULL);
+
+
+--
+-- Name: idx_audit_sync_status; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_audit_sync_status ON data.account_balance_audit USING btree (sync_status, created_at) WHERE ((sync_status)::text <> 'completed'::text);
+
+
+--
+-- Name: idx_audit_usage_log; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_audit_usage_log ON data.account_balance_audit USING btree (usage_log_id) WHERE (usage_log_id IS NOT NULL);
+
+
+--
 -- Name: idx_config_nodes_active; Type: INDEX; Schema: data; Owner: geohuz
 --
 
@@ -5588,6 +5899,20 @@ CREATE INDEX idx_config_nodes_name ON data.config_nodes USING btree (name);
 --
 
 CREATE INDEX idx_config_nodes_parent ON data.config_nodes USING btree (parent_id) WHERE (parent_id IS NOT NULL);
+
+
+--
+-- Name: idx_daily_summary_account; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_daily_summary_account ON data.daily_account_summary USING btree (account_id, summary_date DESC);
+
+
+--
+-- Name: idx_daily_summary_date; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_daily_summary_date ON data.daily_account_summary USING btree (summary_date DESC);
 
 
 --
@@ -5647,6 +5972,55 @@ CREATE INDEX idx_portkey_templates_tenant ON data.portkey_config_templates USING
 
 
 --
+-- Name: idx_reconciliation_date; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_reconciliation_date ON data.reconciliation_report USING btree (report_date DESC);
+
+
+--
+-- Name: idx_reconciliation_status; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_reconciliation_status ON data.reconciliation_report USING btree (report_status);
+
+
+--
+-- Name: idx_usage_log_account; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_usage_log_account ON data.usage_log USING btree (account_id) WHERE (account_id IS NOT NULL);
+
+
+--
+-- Name: idx_usage_log_composite; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_usage_log_composite ON data.usage_log USING btree (user_id, provider, model, created_at DESC);
+
+
+--
+-- Name: idx_usage_log_deduction; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_usage_log_deduction ON data.usage_log USING btree (deduction_id);
+
+
+--
+-- Name: idx_usage_log_sync_status; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_usage_log_sync_status ON data.usage_log USING btree (sync_status, created_at) WHERE ((sync_status)::text <> 'completed'::text);
+
+
+--
+-- Name: idx_usage_log_tenant_date; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_usage_log_tenant_date ON data.usage_log USING btree (tenant_id, created_at DESC) WHERE (tenant_id IS NOT NULL);
+
+
+--
 -- Name: tier_feature_mappings_unique; Type: INDEX; Schema: data; Owner: geohuz
 --
 
@@ -5682,13 +6056,6 @@ CREATE CONSTRAINT TRIGGER ensure_user_role_exists AFTER INSERT OR UPDATE ON auth
 
 
 --
--- Name: config_levels config_levels_notify; Type: TRIGGER; Schema: data; Owner: geohuz
---
-
-CREATE TRIGGER config_levels_notify AFTER INSERT OR DELETE OR UPDATE ON data.config_levels FOR EACH ROW EXECUTE FUNCTION data.notify_config_change();
-
-
---
 -- Name: config_types config_types_notify; Type: TRIGGER; Schema: data; Owner: geohuz
 --
 
@@ -5696,24 +6063,10 @@ CREATE TRIGGER config_types_notify AFTER INSERT OR DELETE OR UPDATE ON data.conf
 
 
 --
--- Name: inheritance_rules inheritance_rules_notify; Type: TRIGGER; Schema: data; Owner: geohuz
---
-
-CREATE TRIGGER inheritance_rules_notify AFTER INSERT OR DELETE OR UPDATE ON data.inheritance_rules FOR EACH ROW EXECUTE FUNCTION data.notify_config_change();
-
-
---
 -- Name: config_nodes notify_node_changed_trigger; Type: TRIGGER; Schema: data; Owner: geohuz
 --
 
 CREATE TRIGGER notify_node_changed_trigger AFTER UPDATE OF config_data, parent_id ON data.config_nodes FOR EACH ROW EXECUTE FUNCTION data.notify_node_changed();
-
-
---
--- Name: inheritance_rules prevent_inheritance_cycle_trigger; Type: TRIGGER; Schema: data; Owner: geohuz
---
-
-CREATE TRIGGER prevent_inheritance_cycle_trigger BEFORE INSERT OR UPDATE ON data.inheritance_rules FOR EACH ROW EXECUTE FUNCTION data.prevent_inheritance_cycle();
 
 
 --
@@ -5728,13 +6081,6 @@ CREATE TRIGGER prevent_unsupported_tier_features_trigger BEFORE INSERT OR UPDATE
 --
 
 CREATE TRIGGER tier_feature_mappings_notify AFTER INSERT OR DELETE OR UPDATE ON data.tier_feature_mappings FOR EACH ROW EXECUTE FUNCTION data.notify_config_change();
-
-
---
--- Name: account_balance trg_account_balance_notify; Type: TRIGGER; Schema: data; Owner: geohuz
---
-
-CREATE TRIGGER trg_account_balance_notify AFTER INSERT OR UPDATE OF balance, overdue_amount ON data.account_balance FOR EACH ROW EXECUTE FUNCTION data.notify_account_balance_update();
 
 
 --
@@ -5773,6 +6119,14 @@ CREATE TRIGGER update_portkey_templates_timestamp BEFORE UPDATE ON data.portkey_
 
 
 --
+-- Name: account_balance_audit account_balance_audit_usage_log_id_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.account_balance_audit
+    ADD CONSTRAINT account_balance_audit_usage_log_id_fkey FOREIGN KEY (usage_log_id) REFERENCES data.usage_log(id);
+
+
+--
 -- Name: account_balance account_balance_owner_id_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
 --
 
@@ -5786,14 +6140,6 @@ ALTER TABLE ONLY data.account_balance
 
 ALTER TABLE ONLY data.account_balance
     ADD CONSTRAINT account_balance_owner_user_fkey FOREIGN KEY (owner_userid) REFERENCES data.user_profile(user_id);
-
-
---
--- Name: config_levels config_levels_parent_level_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.config_levels
-    ADD CONSTRAINT config_levels_parent_level_fkey FOREIGN KEY (parent_level) REFERENCES data.config_levels(level_name);
 
 
 --
@@ -5821,6 +6167,14 @@ ALTER TABLE ONLY data.customer_type_rate
 
 
 --
+-- Name: daily_account_summary daily_account_summary_account_id_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.daily_account_summary
+    ADD CONSTRAINT daily_account_summary_account_id_fkey FOREIGN KEY (account_id) REFERENCES data.account_balance(id);
+
+
+--
 -- Name: billing_event fk_billing_user; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
 --
 
@@ -5842,38 +6196,6 @@ ALTER TABLE ONLY data.topup_record
 
 ALTER TABLE ONLY data.gateway_routes
     ADD CONSTRAINT gateway_routes_config_template_id_fkey FOREIGN KEY (config_template_id) REFERENCES data.portkey_config_templates(id);
-
-
---
--- Name: inheritance_rules inheritance_rules_child_level_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.inheritance_rules
-    ADD CONSTRAINT inheritance_rules_child_level_fkey FOREIGN KEY (child_level) REFERENCES data.config_levels(level_name);
-
-
---
--- Name: inheritance_rules inheritance_rules_config_type_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.inheritance_rules
-    ADD CONSTRAINT inheritance_rules_config_type_fkey FOREIGN KEY (config_type) REFERENCES data.config_types(type_name);
-
-
---
--- Name: inheritance_rules inheritance_rules_custom_merge_strategy_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.inheritance_rules
-    ADD CONSTRAINT inheritance_rules_custom_merge_strategy_fkey FOREIGN KEY (custom_merge_strategy) REFERENCES data.merge_strategies(strategy_name);
-
-
---
--- Name: inheritance_rules inheritance_rules_parent_level_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
---
-
-ALTER TABLE ONLY data.inheritance_rules
-    ADD CONSTRAINT inheritance_rules_parent_level_fkey FOREIGN KEY (parent_level) REFERENCES data.config_levels(level_name);
 
 
 --
@@ -5981,6 +6303,14 @@ ALTER TABLE ONLY data.tier_feature_mappings
 
 
 --
+-- Name: usage_log usage_log_account_id_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.usage_log
+    ADD CONSTRAINT usage_log_account_id_fkey FOREIGN KEY (account_id) REFERENCES data.account_balance(id);
+
+
+--
 -- Name: user_profile user_profile_customer_type_id_fkey; Type: FK CONSTRAINT; Schema: data; Owner: geohuz
 --
 
@@ -6067,12 +6397,6 @@ CREATE POLICY admin_access ON data.usage_log USING ((((current_setting('request.
 
 
 --
--- Name: usage_log; Type: ROW SECURITY; Schema: data; Owner: geohuz
---
-
-ALTER TABLE data.usage_log ENABLE ROW LEVEL SECURITY;
-
---
 -- Name: usage_log user_access; Type: POLICY; Schema: data; Owner: geohuz
 --
 
@@ -6138,6 +6462,14 @@ GRANT ALL ON FUNCTION api.activate_virtual_key(p_virtual_key text, p_reason text
 
 
 --
+-- Name: FUNCTION admin_set_balance(p_account_id uuid, p_account_type text, p_new_balance numeric, p_operator_id uuid, p_reason text, p_trace_id uuid); Type: ACL; Schema: api; Owner: geohuz
+--
+
+REVOKE ALL ON FUNCTION api.admin_set_balance(p_account_id uuid, p_account_type text, p_new_balance numeric, p_operator_id uuid, p_reason text, p_trace_id uuid) FROM PUBLIC;
+GRANT ALL ON FUNCTION api.admin_set_balance(p_account_id uuid, p_account_type text, p_new_balance numeric, p_operator_id uuid, p_reason text, p_trace_id uuid) TO sys_admin;
+
+
+--
 -- Name: FUNCTION blacklist_user(p_user_id uuid, p_reason text); Type: ACL; Schema: api; Owner: geohuz
 --
 
@@ -6149,6 +6481,14 @@ GRANT ALL ON FUNCTION api.blacklist_user(p_user_id uuid, p_reason text) TO sys_a
 --
 
 GRANT ALL ON FUNCTION api.cancel_user(p_user_id uuid, p_reason text) TO sys_admin;
+
+
+--
+-- Name: FUNCTION change_account_balance(p_account_id uuid, p_account_type text, p_amount numeric, p_action text, p_operator_id uuid, p_reason text, p_trace_id uuid); Type: ACL; Schema: api; Owner: geohuz
+--
+
+REVOKE ALL ON FUNCTION api.change_account_balance(p_account_id uuid, p_account_type text, p_amount numeric, p_action text, p_operator_id uuid, p_reason text, p_trace_id uuid) FROM PUBLIC;
+GRANT ALL ON FUNCTION api.change_account_balance(p_account_id uuid, p_account_type text, p_amount numeric, p_action text, p_operator_id uuid, p_reason text, p_trace_id uuid) TO sys_admin;
 
 
 --
@@ -6501,13 +6841,10 @@ GRANT ALL ON TABLE data.virtual_key TO api_views_owner;
 
 
 --
--- Name: TABLE billing_accounts; Type: ACL; Schema: api; Owner: geohuz
+-- Name: TABLE billing_accounts; Type: ACL; Schema: api; Owner: api_views_owner
 --
 
-GRANT ALL ON TABLE api.billing_accounts TO api_views_owner;
-GRANT SELECT ON TABLE api.billing_accounts TO norm_user;
-GRANT ALL ON TABLE api.billing_accounts TO sys_admin;
-GRANT SELECT ON TABLE api.billing_accounts TO tenant_admin;
+GRANT SELECT ON TABLE api.billing_accounts TO sys_admin;
 
 
 --
@@ -6609,23 +6946,6 @@ GRANT SELECT ON TABLE api.topup_records TO norm_user;
 
 
 --
--- Name: TABLE usage_log; Type: ACL; Schema: data; Owner: geohuz
---
-
-GRANT ALL ON TABLE data.usage_log TO api_views_owner;
-
-
---
--- Name: TABLE usage_logs; Type: ACL; Schema: api; Owner: api_views_owner
---
-
-GRANT ALL ON TABLE api.usage_logs TO sys_admin;
-GRANT SELECT ON TABLE api.usage_logs TO human_admin;
-GRANT SELECT ON TABLE api.usage_logs TO norm_user;
-GRANT SELECT ON TABLE api.usage_logs TO tenant_admin;
-
-
---
 -- Name: TABLE api_key; Type: ACL; Schema: data; Owner: geohuz
 --
 
@@ -6688,13 +7008,6 @@ GRANT SELECT ON TABLE data.billing_event TO api_views_owner;
 
 
 --
--- Name: TABLE config_levels; Type: ACL; Schema: data; Owner: geohuz
---
-
-GRANT ALL ON TABLE data.config_levels TO api_views_owner;
-
-
---
 -- Name: TABLE customer_type_rate; Type: ACL; Schema: data; Owner: geohuz
 --
 
@@ -6716,6 +7029,13 @@ GRANT ALL ON TABLE data.rate_limit TO api_views_owner;
 
 
 --
+-- Name: TABLE usage_log; Type: ACL; Schema: data; Owner: geohuz
+--
+
+GRANT ALL ON TABLE data.usage_log TO api_views_owner;
+
+
+--
 -- Name: TABLE system_config; Type: ACL; Schema: internal; Owner: geohuz
 --
 
@@ -6726,5 +7046,5 @@ GRANT SELECT ON TABLE internal.system_config TO sys_admin;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ZBDTiQxQqIZQVrJsvlC0s2uKYDURczCZDwoPjynoFurOsn2l6QiVWrAIDJHgBZc
+\unrestrict H99WEjOI8PQPm7pfnJIHt5Djudp51fbKNkQpdwHevCCwvnoXOVfXCYzfGVmCKBn
 
