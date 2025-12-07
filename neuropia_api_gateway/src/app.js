@@ -155,9 +155,6 @@ function setupGracefulShutdown() {
 
     // 只关闭确实存在的服务
     await Promise.allSettled([
-      configCacheManager
-        .stop()
-        .then(() => console.log("configCacheManager shutdown")),
       RedisService.disconnect().then(() => console.log("Redis disconnected")),
     ]);
 

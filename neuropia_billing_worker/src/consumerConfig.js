@@ -1,4 +1,5 @@
 // Stream消费者配置（给 billing_worker 用）
+// 适合中等规模的系统
 module.exports = {
   // Stream配置
   streamPrefix: process.env.STREAM_PREFIX || "stream:deductions",
@@ -18,3 +19,12 @@ module.exports = {
   enableMetrics: process.env.STREAM_ENABLE_METRICS === "true",
   enableDeadLetter: process.env.STREAM_ENABLE_DEAD_LETTER === "true",
 };
+
+/*
+# 根据负载动态调整
+export STREAM_BATCH_SIZE=100        # 高流量时可增大
+export STREAM_POLL_INTERVAL=50      # 消息多时更频繁
+export STREAM_BLOCK_TIME=2000       # 适中阻塞时间
+export STREAM_MAX_RETRIES=5         # 生产环境可多试几次
+export STREAM_RETRY_DELAY=2000      # 重试间隔2秒
+*/
