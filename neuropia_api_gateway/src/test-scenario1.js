@@ -40,11 +40,11 @@ async function createTestUser() {
   const username = `test_user_${Date.now()}`;
   const email = `${username}@test.com`;
   const password = "test_password_123";
-  const customerTypeId = "eb948fd1-b8da-46c7-aa51-92eb296970c8";
+  const customerTypeId = "eb948fd1-b8da-46c7-aa51-92eb296970c8"; // !!
 
   // 1. 注册用户
   const result = await pgClient.query(
-    `SELECT api.register_user($1, $2, $3, $4, NULL) as user_id`,
+    `SELECT api.register_user($1, $2, $3, $4, NULL) as user_id`, // !!
     [email, username, password, "norm_user"],
   );
 
@@ -54,7 +54,7 @@ async function createTestUser() {
   await pgClient.query(
     `UPDATE data.user_profile SET status = 'active', customer_type_id = $1 WHERE user_id = $2`,
     [customerTypeId, userId],
-  );
+  ); // !!
 
   const userResult = await pgClient.query(
     `SELECT user_id, username, status, customer_type_id FROM data.user_profile WHERE user_id = $1`,
@@ -69,6 +69,7 @@ async function createTestUser() {
 
   // 3. 插入virtual_key
   const virtualKeyResult = await pgClient.query(
+    // !!
     `
     INSERT INTO data.virtual_key (
       user_id,
@@ -105,7 +106,7 @@ async function attachVirtualKeyToConfig() {
   console.log("🔗 将virtual_key附加到config node...");
 
   // 使用您提供的固定config_node_id
-  const configNodeId = "834c04a4-96a2-4a97-b270-fcec5cac66ef";
+  const configNodeId = "834c04a4-96a2-4a97-b270-fcec5cac66ef"; // !!
 
   try {
     const result = await pgClient.query(
@@ -140,7 +141,7 @@ async function injectFunds(amount) {
   );
 
   if (accountCheck.rows.length === 0) {
-    console.log("   创建账户余额记录...");
+    console.log("   创建账户余额记录..."); // !!
     await pgClient.query(
       `
       INSERT INTO data.account_balance (owner_userid, balance)
@@ -151,7 +152,7 @@ async function injectFunds(amount) {
   }
 
   // 使用 complete_fund_operation_directly 函数
-  console.log("   调用complete_fund_operation_directly函数...");
+  console.log("   调用complete_fund_operation_directly函数..."); // !!
   const result = await pgClient.query(
     `
     SELECT * FROM data.complete_fund_operation_directly(
