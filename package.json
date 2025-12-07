@@ -13,6 +13,8 @@
     "dev:billing": "dotenv -e .env -- npm run dev --workspace=neuropia_billing_worker",
     "dev": "npm-run-all --parallel dev:gateway dev:analytic",
     "test:1": "dotenv -e .env -- node neuropia_api_gateway/src/test-scenario1.js",
+    "test:2": "dotenv -e .env -- node neuropia_api_gateway/src/test-scenario2.js",
+    "test:3": "dotenv -e .env -- node neuropia_api_gateway/src/test-scenario3.js",
     "test:integration": "jest tests/integration/ --verbose",
     "test": "npm run test:integration && npm run test:e2e"
   },
