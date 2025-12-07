@@ -309,77 +309,6 @@ async function cleanupOldMessages(maxAgeHours = 24, maxPerShard = 1000) {
   return cleanupStats;
 }
 
-/**
- * 获取Stream统计信息（已实现）
- */
-async function getStreamStats() {
-  const client = await RedisService.connect();
-  const stats = {
-    total_shards: NUM_SHARDS,
-    active_shards: 0,
-    total_messages: 0,
-    shards: [],
-  };
-
-  for (let i = 0; i < NUM_SHARDS; i++) {
-    const streamKey = `${STREAM_PREFIX}:${i}`;
-
-    try {
-      // 检查Stream是否存在
-      const length = await client.sendCommand(["XLEN", streamKey]);
-
-      if (length > 0) {
-        stats.active_shards++;
-        stats.total_messages += length;
-
-        // 获取第一条和最后一条消息的时间
-        const firstEntry = await client.sendCommand([
-          "XRANGE",
-          streamKey,
-          "-",
-          "+",
-          "COUNT",
-          "1",
-        ]);
-        const lastEntry = await client.sendCommand([
-          "XREVRANGE",
-          streamKey,
-          "+",
-          "-",
-          "COUNT",
-          "1",
-        ]);
-
-        let oldestTime = null;
-        let newestTime = null;
-
-        if (firstEntry && firstEntry.length > 0) {
-          const firstId = firstEntry[0][0];
-          oldestTime = new Date(parseInt(firstId.split("-")[0]));
-        }
-
-        if (lastEntry && lastEntry.length > 0) {
-          const lastId = lastEntry[0][0];
-          newestTime = new Date(parseInt(lastId.split("-")[0]));
-        }
-
-        stats.shards.push({
-          shard: i,
-          stream_key: streamKey,
-          length: length,
-          oldest_message: oldestTime?.toISOString() || null,
-          newest_message: newestTime?.toISOString() || null,
-        });
-      }
-    } catch (error) {
-      // Stream可能不存在，忽略错误
-      console.debug(`Stream ${streamKey} 不存在或访问失败:`, error.message);
-    }
-  }
-
-  return stats;
-}
-
 // ----------------------------
 // 预留接口（stub）
 // ----------------------------
@@ -425,7 +354,6 @@ module.exports = {
   writeDeduction,
   writeDeductionsBatch,
   cleanupOldMessages,
-  getStreamStats,
 
   // 预留的（stub）
   readDeductions,

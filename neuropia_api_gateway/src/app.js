@@ -18,6 +18,7 @@ const RedisService = require("@shared/clients/redis_op");
 const configCacheManager = require("./services/configCacheManager");
 const pricingCacheManager = require("./services/pricingCacheManager");
 const balanceService = require("./services/balanceService");
+const streamCleanupService = require("./services/streamCleanupService");
 
 let server = null;
 let initialized = false;
@@ -42,6 +43,9 @@ async function initialize() {
     await pricingCacheManager.initialize();
 
     await balanceService.initialize();
+
+    streamCleanupService.start();
+    console.log("✅ Stream清理服务已启动");
 
     initialized = true;
     console.log("Neuropia API Gateway initialized successfully");

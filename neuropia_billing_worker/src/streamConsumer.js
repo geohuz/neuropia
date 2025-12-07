@@ -1,34 +1,12 @@
 // neuropia_billing_worker/src/streamConsumer.js
 const RedisService = require("@shared/clients/redis_op");
 const dbWriter = require("./dbWriter");
-const sharedConfig = require("@shared/config");
-const CONFIG = sharedConfig.streaming.consumer;
+const CONFIG = require("./consumerConfig");
 
 const config = {
   ...CONFIG,
   consumerName: `worker_${process.pid}_${Date.now()}`,
 };
-// 配置
-// const CONFIG = {
-//   // Stream配置
-//   streamPrefix: "stream:deductions",
-//   numShards: 16,
-//   consumerGroup: "billing_workers",
-//   consumerName: `worker_${process.pid}_${Date.now()}`,
-
-//   // 消费策略
-//   batchSize: 50, // 每批处理50条
-//   pollInterval: 100, // 轮询间隔100ms
-//   blockTime: 5000, // 阻塞读取超时5秒
-
-//   // 重试策略
-//   maxRetries: 3, // 最大重试次数
-//   retryDelay: 1000, // 重试延迟1秒（指数退避）
-
-//   // 监控（预留stub）
-//   enableMetrics: false, // TODO: 监控指标
-//   enableDeadLetter: false, // TODO: 死信队列
-// };
 
 // 🎯 添加全局控制标志
 let shouldStopConsuming = false;

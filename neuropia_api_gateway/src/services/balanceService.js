@@ -4,7 +4,7 @@ const CACHE_KEYS = require("../constants/cacheKeys");
 const pgNotifyListener = require("../listeners/pgNotifyListener");
 const ALL_CHANNELS = require("../constants/pgNotifyChannels");
 const pricingCacheManager = require("./pricingCacheManager");
-const StreamService = require("@shared/services/streamService");
+const StreamService = require("./streamService");
 const logger = require("@shared/utils/logger"); // 导入
 
 class BalanceService {
