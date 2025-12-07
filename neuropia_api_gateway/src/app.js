@@ -147,16 +147,11 @@ function setupGracefulShutdown() {
   const gracefulShutdown = async (signal) => {
     console.log(`\n Received ${signal}, shutting down gracefully...`);
 
-    if (server) {
-      server.close(() => {
-        console.log("HTTP server closed");
-      });
-    }
+    server.close(() => {
+      console.log("HTTP server closed");
+    });
 
-    // 只关闭确实存在的服务
-    await Promise.allSettled([
-      RedisService.disconnect().then(() => console.log("Redis disconnected")),
-    ]);
+    streamCleanupService.stop();
 
     console.log("Graceful shutdown completed");
     process.exit(0);

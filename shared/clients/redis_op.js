@@ -217,29 +217,11 @@ const biz = {
   },
 };
 
-// 在 @shared/clients/redis_op.js 文件末尾，添加：
-async function disconnect() {
-  if (client) {
-    try {
-      console.log("关闭Redis连接...");
-      await client.quit();
-      client = null;
-      console.log("Redis连接已关闭");
-      return true;
-    } catch (error) {
-      console.error("关闭Redis连接失败:", error.message);
-      return false;
-    }
-  }
-  return true; // 没有连接，也算成功
-}
-
 // ------------------------------
 // Export
 // ------------------------------
 module.exports = {
   connect: getClient,
-  disconnect,
   kv,
   stream,
   biz,

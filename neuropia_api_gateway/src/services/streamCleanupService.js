@@ -132,15 +132,4 @@ class StreamCleanupService {
 // 创建单例
 const cleanupService = new StreamCleanupService();
 
-// 优雅关闭处理
-process.on("SIGTERM", () => {
-  console.log("📩 收到 SIGTERM 信号");
-  cleanupService.stop();
-});
-
-process.on("SIGINT", () => {
-  console.log("📩 收到 SIGINT 信号");
-  cleanupService.stop();
-});
-
 module.exports = cleanupService;
