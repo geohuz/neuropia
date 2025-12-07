@@ -18,10 +18,31 @@ class BalanceService {
   constructor() {
     this.initialized = false;
     this.pricingManager = pricingCacheManager;
+
+    // 批量写参数设置
+    this.pendingStreamWrites = [];
+    this.isFlushing = false;
+    this.flushTimer = null;
+
+    this.batchMode = process.env.STREAM_BATCH_MODE || "on";
+    this.batchSize = parseInt(process.env.PRODUCER_BATCH_SIZE) || 20;
+    this.flushInterval =
+      parseInt(process.env.PRODUCER_FLUSH_INTERVAL_MS) || 1000;
+    this.maxQueueSize = parseInt(process.env.PRODUCER_MAX_QUEUE_SIZE) || 1000;
   }
 
   async initialize() {
     if (this.initialized) return;
+
+    if (this.batchMode === "on") {
+      this._startFlushTimer();
+      logger.info("启用Stream批量写入", {
+        batchSize: this.batchSize,
+        flushInterval: this.flushInterval,
+      });
+    } else {
+      logger.info("使用Stream单条写入模式");
+    }
 
     pgNotifyListener.eventBus.on(
       ALL_CHANNELS.ACCOUNT_BALANCE_UPDATED,
@@ -376,8 +397,35 @@ class BalanceService {
    * 异步写入Stream
    */
   async _writeToStreamInBackground(data) {
-    // 这里可以加延迟，避免影响主流程
-    await StreamService.writeDeduction(data);
+    try {
+      if (this.batchMode === "off") {
+        // 单条模式
+        await StreamService.writeDeduction(data);
+      } else {
+        // 检查队列是否已满
+        if (this.pendingStreamWrites.length >= this.maxQueueSize) {
+          logger.warn("Stream队列已满，丢弃一条记录", {
+            currentSize: this.pendingStreamWrites.length,
+            maxSize: this.maxQueueSize,
+          });
+          this.pendingStreamWrites.shift(); // 丢弃最旧的一条
+        }
+
+        // 批量模式：加入队列
+        this.pendingStreamWrites.push(data);
+
+        // 达到批量大小时立即刷新
+        if (this.pendingStreamWrites.length >= this.batchSize) {
+          setImmediate(() => this._flushPendingWrites());
+        }
+      }
+    } catch (error) {
+      logger.error("Stream写入失败", {
+        deduction_id: data.deduction_id || "unknown",
+        error: error.message,
+        batchMode: this.batchMode,
+      });
+    }
   }
 
   async chargeUser(accountId, accountType, chargeAmount) {
@@ -518,6 +566,62 @@ class BalanceService {
     );
 
     return balanceData;
+  }
+
+  /**
+   * 启动定时刷新器
+   */
+  _startFlushTimer() {
+    this.flushTimer = setInterval(async () => {
+      await this._flushPendingWrites();
+    }, this.flushInterval);
+  }
+
+  /**
+   * 刷新待写入队列
+   */
+  async _flushPendingWrites() {
+    if (this.isFlushing || this.pendingStreamWrites.length === 0) {
+      return;
+    }
+
+    this.isFlushing = true;
+
+    try {
+      const batch = [...this.pendingStreamWrites];
+      this.pendingStreamWrites = [];
+
+      if (batch.length > 0) {
+        logger.debug("刷新Stream队列", { batchSize: batch.length });
+        await StreamService.writeDeductionsBatch(batch);
+      }
+    } catch (error) {
+      logger.error("批量写入Stream失败", {
+        pendingCount: this.pendingStreamWrites.length,
+        error: error.message,
+        stack: error.stack,
+      });
+    } finally {
+      this.isFlushing = false;
+    }
+  }
+
+  /**
+   * 关闭服务时刷新剩余数据
+   */
+  async shutdown() {
+    logger.info("BalanceService正在关闭，刷新剩余Stream数据...");
+
+    // 清理定时器
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+
+    if (this.pendingStreamWrites.length > 0) {
+      await this._flushPendingWrites();
+    }
+    logger.info("BalanceService已关闭");
   }
 }
 

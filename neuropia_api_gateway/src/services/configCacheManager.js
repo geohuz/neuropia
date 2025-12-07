@@ -1,14 +1,15 @@
-// neuropia_api_gateway/src/services/cacheManager.js
 const { Client } = require("@shared/clients/pg");
 const RedisService = require("@shared/clients/redis_op");
 const CACHE_KEYS = require("../constants/cacheKeys");
 const pgNotifyListener = require("../listeners/pgNotifyListener");
 const ALL_CHANNELS = require("../constants/pgNotifyChannels");
+const logger = require("@shared/utils/logger"); // 引入 logger
 
 class ConfigCacheManager {
   constructor() {
     this.pgClient = null;
     this.initialized = false;
+    this.logger = logger; // 保存 logger 实例
   }
 
   async initialize() {
@@ -26,11 +27,15 @@ class ConfigCacheManager {
     );
 
     this.initialized = true;
-    console.log("✅ configCacheManager initialized with pg_notify listening");
+    this.logger.info(
+      "✅ configCacheManager initialized with pg_notify listening",
+    );
   }
 
   async handleNotification(msg) {
-    console.log(`📢 Received notification: ${msg.channel} - ${msg.payload}`);
+    this.logger.info(
+      `📢 Received notification: ${msg.channel} - ${msg.payload}`,
+    );
 
     try {
       switch (msg.channel) {
@@ -42,7 +47,14 @@ class ConfigCacheManager {
           break;
       }
     } catch (error) {
-      console.error("❌ Error handling notification:", error);
+      logger.error("❌ Error handling notification", {
+        channel: msg.channel,
+        payload: msg.payload,
+        error: error.message,
+        stack: error.stack,
+        code: error.code,
+        name: error.name,
+      });
     }
   }
 
@@ -57,7 +69,7 @@ class ConfigCacheManager {
       const vkIds = JSON.parse(cached);
       for (const vkId of vkIds) {
         await RedisService.kv.del(CACHE_KEYS.VIRTUAL_KEY_CONFIG(vkId));
-        console.log(`🧹 Cleared vk_config for: ${vkId} (node change)`);
+        this.logger.info(`🧹 Cleared vk_config for: ${vkId} (node change)`);
       }
     }
   }
@@ -67,13 +79,13 @@ class ConfigCacheManager {
    */
   async handleVirtualKeyChange(virtualKey) {
     await RedisService.kv.del(CACHE_KEYS.VIRTUAL_KEY_CONFIG(virtualKey));
-    console.log(`🧹 Cleared vk_config for: ${virtualKey}`);
+    this.logger.info(`🧹 Cleared vk_config for: ${virtualKey}`);
   }
 
   async shutdown() {
     if (this.pgClient) {
       await this.pgClient.end();
-      console.log("✅ CacheManager PostgreSQL connection closed");
+      this.logger.info("✅ CacheManager PostgreSQL connection closed");
     }
   }
 }

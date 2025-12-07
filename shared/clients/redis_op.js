@@ -1,5 +1,6 @@
 const { createClient } = require("redis");
 const REDIS_SCHEMA = require("./redisSchema");
+const logger = require("@shared/utils/logger");
 
 let client = null;
 let connecting = false;
@@ -17,7 +18,6 @@ async function getClient() {
     }
     connecting = true;
     try {
-      console.log("🔄 创建 Redis 连接");
       client = createClient({
         url: process.env.REDIS_URL || "redis://localhost:6379",
         socket: {
@@ -29,10 +29,13 @@ async function getClient() {
       });
 
       client.on("error", (err) => {
-        console.error("Redis 错误:", err);
+        logger.error("Redis 错误:", {
+          error: err.message,
+          stack: err.stack,
+        });
         connectionErrors++;
         if (connectionErrors >= MAX_CONNECTION_ERRORS) {
-          console.error("Redis 连接错误次数过多");
+          logger.error("Redis 连接错误次数过多");
         }
       });
 
@@ -40,7 +43,7 @@ async function getClient() {
       client.on("ready", () => (connectionErrors = 0));
 
       await client.connect();
-      console.log("✅ Redis 连接成功");
+      logger.info("✅ Redis 连接成功");
     } finally {
       connecting = false;
     }

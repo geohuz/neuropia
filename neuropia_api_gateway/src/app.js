@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const logger = require("@shared/utils/logger");
 
 // 中间件
 const { VirtualKeyMiddleware } = require("./middleware/virtualKey");
@@ -27,14 +28,14 @@ async function initialize() {
   if (initialized) return;
 
   try {
-    console.log("🚀 Initializing Neuropia API Gateway...");
+    logger.info("🚀 Initializing Neuropia API Gateway...");
 
     await pgNotifyListener.start();
-    console.log("✅ pg_notify listener started");
+    logger.info("✅ pg_notify listener started");
 
     // 1. 连接 Redis
     await RedisService.connect();
-    console.log("✅ Redis connected successfully");
+    logger.info("✅ Redis connected successfully");
 
     // 2. 初始化配置缓存管理器
     await configCacheManager.initialize();
@@ -45,12 +46,13 @@ async function initialize() {
     await balanceService.initialize();
 
     streamCleanupService.start();
-    console.log("✅ Stream清理服务已启动");
-
+    logger.info("✅ Stream清理服务已启动");
     initialized = true;
-    console.log("Neuropia API Gateway initialized successfully");
   } catch (error) {
-    console.error("❌ Initialization failed:", error);
+    logger.error("❌ Initialization failed:", {
+      error: error.message,
+      stack: error.stack,
+    });
     throw error;
   }
 }
@@ -180,15 +182,18 @@ async function start(port = process.env.PORT || 3001) {
     setupErrorHandling(app);
 
     server = app.listen(port, () => {
-      console.log(`Neuropia API Gateway running on port ${port}`);
-      console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
-      console.log(`Health check: http://localhost:${port}/health`);
+      logger.info(`Neuropia API Gateway running on port ${port}`);
+      logger.info(`Environment: ${process.env.NODE_ENV || "development"}`);
+      logger.info(`Health check: http://localhost:${port}/health`);
     });
 
     setupGracefulShutdown();
     return server;
   } catch (error) {
-    console.error("💥 Failed to start Neuropia API Gateway:", error);
+    logger.error("💥 Failed to start Neuropia API Gateway:", {
+      error: error.message,
+      stack: error.stack,
+    });
     throw error;
   }
 }

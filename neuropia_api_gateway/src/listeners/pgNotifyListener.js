@@ -26,9 +26,11 @@ async function start() {
     });
 
     isListening = true;
-    console.log(`✅ pg_notify listening to ${ALL_CHANNELS.length} channels`);
   } catch (err) {
-    console.error("❌ Failed to start pg_notify listener:", err);
+    logger.error("❌ Failed to start pg_notify listener:", {
+      error: err.message,
+      stack: err.stack,
+    });
     throw err;
   }
 }

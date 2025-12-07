@@ -1,6 +1,7 @@
 // neuropia_api_gateway/src/services/streamCleanupService.js
 const StreamService = require("./streamService");
 const CONFIG = require("../constants/streamCleanupConfig");
+const logger = require("@shared/utils/logger");
 
 class StreamCleanupService {
   constructor() {
@@ -18,7 +19,7 @@ class StreamCleanupService {
       maxPerShard: CONFIG.settings.maxPerShard || 1000,
     };
 
-    console.log("🧹 Stream清理服务初始化", {
+    logger.info("🧹 Stream清理服务初始化", {
       清理间隔: `${this.config.cleanupInterval / (60 * 60 * 1000)}小时`,
       首次延迟: `${this.config.initialDelay / (60 * 1000)}分钟`,
       保留时长: `${this.config.maxAgeHours}小时`,
@@ -30,11 +31,11 @@ class StreamCleanupService {
    */
   start() {
     if (this.isRunning) {
-      console.warn("清理服务已在运行中");
+      logger.warn("清理服务已在运行中");
       return;
     }
 
-    console.log("🚀 启动Stream自动清理服务");
+    logger.info("🚀 启动Stream自动清理服务");
     this.isRunning = true;
 
     // 延迟首次执行
@@ -46,7 +47,7 @@ class StreamCleanupService {
       this.config.cleanupInterval,
     );
 
-    console.log(
+    logger.info(
       `📅 清理计划: 首次${this.config.initialDelay / 60000}分钟后，之后每${this.config.cleanupInterval / (60 * 60 * 1000)}小时`,
     );
   }
@@ -58,7 +59,7 @@ class StreamCleanupService {
     const startTime = Date.now();
 
     try {
-      console.log("🧹 开始清理Stream旧消息...");
+      logger.info("🧹 开始清理Stream旧消息...");
 
       const result = await StreamService.cleanupOldMessages(
         this.config.maxAgeHours,
@@ -68,21 +69,24 @@ class StreamCleanupService {
       const duration = Date.now() - startTime;
 
       if (result.total_cleaned > 0) {
-        console.log(
+        logger.info(
           `✅ 清理完成: ${result.total_cleaned} 条消息，耗时 ${duration}ms`,
         );
 
         // 简单错误检查
         if (result.errors && result.errors.length > 0) {
-          console.warn(`⚠️ 清理时 ${result.errors.length} 个分片出错`);
+          logger.warn(`⚠️ 清理时 ${result.errors.length} 个分片出错`);
         }
       } else {
-        console.log(`📭 无旧消息可清理，耗时 ${duration}ms`);
+        logger.info(`📭 无旧消息可清理，耗时 ${duration}ms`);
       }
 
       return result;
     } catch (error) {
-      console.error("❌ Stream清理失败:", error.message);
+      logger.error("❌ Stream清理失败:", {
+        error: error.message,
+        stack: error.stack,
+      });
       throw error;
     }
   }
@@ -91,7 +95,7 @@ class StreamCleanupService {
    * 手动执行一次清理（用于测试或紧急清理）
    */
   async manualCleanup(maxAgeHours, maxPerShard) {
-    console.log("🔧 手动执行Stream清理...");
+    logger.info("🔧 手动执行Stream清理...");
 
     return await StreamService.cleanupOldMessages(
       maxAgeHours || this.config.maxAgeHours,
@@ -109,7 +113,7 @@ class StreamCleanupService {
     }
 
     this.isRunning = false;
-    console.log("🛑 Stream清理服务已停止");
+    logger.info("🛑 Stream清理服务已停止");
   }
 
   /**

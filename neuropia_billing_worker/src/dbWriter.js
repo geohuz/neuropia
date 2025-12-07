@@ -1,5 +1,6 @@
 // neuropia_billing_worker/src/dbWriter.js
 const pool = require("@shared/clients/pg");
+const logger = require("@shared/utils/logger");
 
 /**
  * 批量写入扣费记录到数据库（只写入usage_log和audit表）
@@ -11,7 +12,7 @@ async function writeDeductionBatch(messages, options = {}) {
   const startTime = Date.now();
   const batchId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
-  console.log(`🔄 开始处理批次 ${batchId}, 消息数: ${messages.length}`);
+  logger.info(`🔄 开始处理批次 ${batchId}, 消息数: ${messages.length}`);
 
   // 默认配置
   const config = {
@@ -54,7 +55,7 @@ async function writeDeductionBatch(messages, options = {}) {
     });
 
     if (validMessages.length === 0) {
-      console.warn(`⚠️ 批次 ${batchId} 无有效消息`);
+      logger.warn(`⚠️ 批次 ${batchId} 无有效消息`);
       return result;
     }
 
@@ -84,7 +85,7 @@ async function writeDeductionBatch(messages, options = {}) {
     // 7. 提交事务（不写daily_summary！）
     await client.query("COMMIT");
 
-    console.log(`✅ 批次 ${batchId} 处理完成:
+    logger.info(`✅ 批次 ${batchId} 处理完成:
       有效消息: ${result.valid_messages}
       usage_log: ${result.written_usage_log}`);
     // audit_log: ${result.written_audit_log}`);
@@ -94,7 +95,7 @@ async function writeDeductionBatch(messages, options = {}) {
       try {
         await client.query("ROLLBACK");
       } catch (rollbackError) {
-        console.error("回滚失败:", rollbackError);
+        logger.error("回滚失败:", rollbackError);
       }
     }
 
@@ -104,7 +105,7 @@ async function writeDeductionBatch(messages, options = {}) {
       stack: error.stack,
     });
 
-    console.error(`❌ 批次 ${batchId} 事务失败:`, error.message);
+    logger.error(`❌ 批次 ${batchId} 事务失败:`, error.message);
   } finally {
     // 9. 释放连接
     if (client) {
@@ -184,7 +185,7 @@ function validateAndFilterMessages(messages) {
           throw new Error(`无效的扣费前余额类型: ${typeof msg.balance_before}`);
         }
         if (msg.balance_before < 0) {
-          console.warn(`⚠️ 扣费前余额为负数: ${msg.balance_before}`, {
+          logger.warn(`⚠️ 扣费前余额为负数: ${msg.balance_before}`, {
             deduction_id: msg.deduction_id,
             account_id: msg.account_id,
           });
@@ -196,7 +197,7 @@ function validateAndFilterMessages(messages) {
           throw new Error(`无效的扣费后余额类型: ${typeof msg.balance_after}`);
         }
         if (msg.balance_after < 0) {
-          console.warn(`⚠️ 扣费后余额为负数: ${msg.balance_after}`, {
+          logger.warn(`⚠️ 扣费后余额为负数: ${msg.balance_after}`, {
             deduction_id: msg.deduction_id,
             account_id: msg.account_id,
           });
@@ -210,7 +211,7 @@ function validateAndFilterMessages(messages) {
 
         // 允许小的浮点数误差
         if (balanceDiff > 0.0001) {
-          console.warn(
+          logger.warn(
             `⚠️ 余额不一致: before(${msg.balance_before}) - cost(${msg.cost}) = ${expectedBalanceAfter}, but after is ${msg.balance_after}, diff=${balanceDiff}`,
             {
               deduction_id: msg.deduction_id,
@@ -223,7 +224,7 @@ function validateAndFilterMessages(messages) {
 
         // 如果扣费后余额大于扣费前，发出警告
         if (msg.balance_after > msg.balance_before) {
-          console.warn(
+          logger.warn(
             `⚠️ 扣费后余额大于扣费前余额: after(${msg.balance_after}) > before(${msg.balance_before})`,
             {
               deduction_id: msg.deduction_id,
@@ -259,7 +260,7 @@ function validateAndFilterMessages(messages) {
         validation_error: error.message,
       });
 
-      console.error("消息验证失败:", {
+      logger.error("消息验证失败:", {
         deduction_id: msg.deduction_id,
         error: error.message,
         data: msg,
@@ -269,7 +270,7 @@ function validateAndFilterMessages(messages) {
 
   // 输出验证统计
   if (invalidMessages.length > 0) {
-    console.warn(
+    logger.warn(
       `⚠️ 发现 ${invalidMessages.length} 条无效消息，${validMessages.length} 条有效消息`,
     );
 
@@ -280,7 +281,7 @@ function validateAndFilterMessages(messages) {
       errorStats[errorType] = (errorStats[errorType] || 0) + 1;
     });
 
-    console.warn("无效消息错误统计:", errorStats);
+    logger.warn("无效消息错误统计:", errorStats);
   }
 
   return { validMessages, invalidMessages };
@@ -387,10 +388,10 @@ async function insertUsageLogs(client, accountGroups) {
       idMap[row.deduction_id] = row.id;
     }
 
-    console.log(`📝 插入 ${inserted} 条 usage_log 记录`);
+    logger.info(`📝 插入 ${inserted} 条 usage_log 记录`);
     return { inserted, idMap };
   } catch (error) {
-    console.error("插入 usage_log 失败:", error);
+    logger.error("插入 usage_log 失败:", error);
     throw error;
   }
 }
@@ -404,10 +405,10 @@ async function testConnection() {
     const result = await client.query("SELECT 1 as test");
     client.release();
 
-    console.log("✅ 数据库连接正常");
+    logger.info("✅ 数据库连接正常");
     return { ok: true };
   } catch (error) {
-    console.error("❌ 数据库连接失败:", error.message);
+    logger.error("❌ 数据库连接失败:", error.message);
     return { ok: false, error: error.message };
   }
 }

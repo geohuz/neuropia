@@ -6,12 +6,13 @@ TODO（需要外部系统）
 失败补偿存储
 */
 const RedisService = require("@shared/clients/redis_op");
+const logger = require("@shared/utils/logger");
 
 // 配置
-const NUM_SHARDS = 16;
+const BATCH_SIZE = parseInt(process.env.PRODUCER_BATCH_SIZE) || 50;
+const NUM_SHARDS = parseInt(process.env.STREAM_SHARD_COUNT) || 16;
+const MAX_LEN = parseInt(process.env.STREAM_MAX_LEN) || 10000;
 const STREAM_PREFIX = "stream:deductions";
-const MAX_LEN = 10000;
-const BATCH_SIZE = 50; // 批量写入大小
 
 // ----------------------------
 // 工具函数
@@ -118,7 +119,7 @@ async function writeDeduction(deductionData) {
     const args = buildXAddArgs(streamKey, message);
     await client.sendCommand(args);
 
-    console.log(`✅ Stream写入成功: ${deductionId} -> ${streamKey}`);
+    logger.info(`✅ Stream写入成功: ${deductionId} -> ${streamKey}`);
 
     return {
       success: true,
@@ -126,7 +127,7 @@ async function writeDeduction(deductionData) {
       stream_key: streamKey,
     };
   } catch (error) {
-    console.error("❌ Stream写入失败:", error.message);
+    logger.error("❌ Stream写入失败:", error.message);
 
     return {
       success: false,
@@ -138,6 +139,9 @@ async function writeDeduction(deductionData) {
   }
 }
 
+/**
+ * 批量写入扣费记录（已实现）
+ */
 /**
  * 批量写入扣费记录（已实现）
  */
@@ -169,6 +173,9 @@ async function writeDeductionsBatch(deductionsArray) {
       output_tokens: deduction.output_tokens || 0,
       total_tokens: deduction.total_tokens || 0,
       timestamp: deduction.timestamp || new Date().toISOString(),
+      balance_before: deduction.balance_before,
+      balance_after: deduction.balance_after,
+      account_owner_id: deduction.account_owner_id,
     };
 
     batchGroups[shardKey].push(message);
@@ -183,34 +190,51 @@ async function writeDeductionsBatch(deductionsArray) {
       const batch = messages.slice(i, i + BATCH_SIZE);
 
       try {
-        // 使用 pipeline 提高性能
-        const pipeline = client.multi();
+        const multi = client.multi();
 
         for (const message of batch) {
-          const args = buildXAddArgs(streamKey, message);
-          pipeline.sendCommand(args);
-        }
-
-        const pipelineResults = await pipeline.exec();
-
-        // 收集结果
-        for (let j = 0; j < batch.length; j++) {
-          const message = batch[j];
-          const result = pipelineResults[j];
-
-          results.push({
-            success: result !== null,
+          multi.xAdd(streamKey, "*", {
             deduction_id: message.deduction_id,
-            stream_key: streamKey,
-            error: result === null ? "Pipeline execution failed" : null,
+            account_id: message.account_id,
+            account_type: message.account_type,
+            virtual_key: message.virtual_key,
+            cost: message.cost.toString(),
+            currency: message.currency,
+            provider: message.provider,
+            model: message.model,
+            input_tokens: message.input_tokens.toString(),
+            output_tokens: message.output_tokens.toString(),
+            total_tokens: message.total_tokens.toString(),
+            timestamp: message.timestamp,
+            account_owner_id: message.account_owner_id || "",
+            ...(message.balance_before !== undefined && {
+              balance_before: message.balance_before.toString(),
+            }),
+            ...(message.balance_after !== undefined && {
+              balance_after: message.balance_after.toString(),
+            }),
           });
         }
 
-        console.log(
-          `✅ Stream批量写入: ${streamKey}, 批次 ${i / BATCH_SIZE + 1}, 数量 ${batch.length}`,
+        const pipelineResults = await multi.exec();
+
+        for (let j = 0; j < batch.length; j++) {
+          const message = batch[j];
+          const [error, result] = pipelineResults[j] || [null, null];
+
+          results.push({
+            success: !error,
+            deduction_id: message.deduction_id,
+            stream_key: streamKey,
+            error: error ? error.message : null,
+            result: result,
+          });
+        }
+
+        logger.info(
+          `✅ Stream批量写入: ${streamKey}, 批次 ${Math.floor(i / BATCH_SIZE) + 1}, 数量 ${batch.length}`,
         );
       } catch (error) {
-        // 批次失败，记录所有消息为失败
         for (const message of batch) {
           results.push({
             success: false,
@@ -220,7 +244,10 @@ async function writeDeductionsBatch(deductionsArray) {
           });
         }
 
-        console.error(`❌ Stream批量写入失败: ${streamKey}`, error.message);
+        logger.error(`❌ Stream批量写入失败: ${streamKey}`, {
+          error: error.message,
+          stack: error.stack,
+        });
       }
     }
   }
@@ -295,14 +322,17 @@ async function cleanupOldMessages(maxAgeHours = 24, maxPerShard = 1000) {
       if (cleaned > 0) {
         cleanupStats.total_cleaned += cleaned;
         cleanupStats.shards_cleaned++;
-        console.log(`🧹 Stream清理: ${streamKey}, 清理 ${cleaned} 条消息`);
+        logger.log(`🧹 Stream清理: ${streamKey}, 清理 ${cleaned} 条消息`);
       }
     } catch (error) {
       cleanupStats.errors.push({
         shard: shardIndex,
         error: error.message,
       });
-      console.error(`❌ Stream清理失败: ${streamKey}`, error.message);
+      logger.error(`❌ Stream清理失败: ${streamKey}`, {
+        error: error.message,
+        stack: error.stack,
+      });
     }
   }
 
@@ -324,7 +354,7 @@ async function readDeductions(
 ) {
   // TODO: 实现消费者组读取逻辑
   // 供BillingWorker消费Stream使用
-  console.warn("Stream读取功能未实现");
+  logger.warn("Stream读取功能未实现");
   return [];
 }
 
@@ -333,7 +363,7 @@ async function readDeductions(
  */
 async function ackMessage(shardIndex, consumerGroup, messageId) {
   // TODO: 实现消息ACK确认
-  console.warn("Stream ACK功能未实现");
+  logger.warn("Stream ACK功能未实现");
   return false;
 }
 
@@ -342,7 +372,7 @@ async function ackMessage(shardIndex, consumerGroup, messageId) {
  */
 async function createConsumerGroup(shardIndex, groupName) {
   // TODO: 创建消费者组
-  console.warn("创建消费者组功能未实现");
+  logger.warn("创建消费者组功能未实现");
   return false;
 }
 

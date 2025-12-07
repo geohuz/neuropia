@@ -4,9 +4,9 @@ const postgrest = require("@shared/clients/postgrest");
 const pgNotifyListener = require("../listeners/pgNotifyListener");
 const ALL_CHANNELS = require("../constants/pgNotifyChannels");
 const CACHE_KEYS = require("../constants/cacheKeys");
+const logger = require("@shared/utils/logger");
 
 const TTL = CACHE_KEYS.TTL.VIRTUAL_KEY_PRICING;
-console.log("ALL_CHA", ALL_CHANNELS);
 
 class PricingCacheManager {
   constructor() {
@@ -16,32 +16,21 @@ class PricingCacheManager {
   async initialize() {
     if (this.initialized) return;
 
-    console.log(
+    logger.info(
       "🔧 PricingCacheManager 初始化，监听频道:",
       ALL_CHANNELS.CUSTOMER_TYPE_RATE_UPDATE,
-    );
-    console.log("🔧 pgNotifyListener.eventBus:", !!pgNotifyListener.eventBus);
-    console.log(
-      "🔧 pgNotifyListener.eventBus.on 方法:",
-      typeof pgNotifyListener.eventBus.on,
     );
 
     // 注册价格变化处理器（app.js已确保pgNotifyListener.start()）
     pgNotifyListener.eventBus.on(
       ALL_CHANNELS.CUSTOMER_TYPE_RATE_UPDATE,
       async (payload) => {
-        console.log("🔔 [Price] 收到通知事件:", {
-          channel: ALL_CHANNELS.CUSTOMER_TYPE_RATE_UPDATE,
-          payload: payload,
-          payloadType: typeof payload,
-          timestamp: new Date().toISOString(),
-        });
         await this.handlePriceChange(payload);
       },
     );
 
     this.initialized = true;
-    console.log("✅ pricingCacheManager initialized");
+    logger.info("✅ pricingCacheManager initialized");
   }
 
   /**
@@ -49,7 +38,7 @@ class PricingCacheManager {
    */
   async handlePriceChange(payload) {
     const ctId = payload.customer_type_id;
-    console.log("📢 Detected price change for customer_type_id:", ctId);
+    logger.info("📢 Detected price change for customer_type_id:", ctId);
 
     // 1. 失效 customer_type 缓存
     await this.invalidateCustomerTypePricing(ctId);
@@ -76,7 +65,7 @@ class PricingCacheManager {
     // 1. 检查缓存
     const cached = await RedisService.kv.get(cacheKey);
     if (cached) {
-      console.log("📦 Virtual key 价格缓存命中:", virtualKey);
+      logger.info("📦 Virtual key 价格缓存命中:", virtualKey);
       return JSON.parse(cached);
     }
 
@@ -86,11 +75,11 @@ class PricingCacheManager {
     });
 
     if (error) {
-      console.error(
-        "❌ Failed to fetch virtual key pricing:",
+      logger.error("Failed to fetch virtual key pricing", {
         virtualKey,
-        error,
-      );
+        error: error.message,
+        stack: error.stack,
+      });
       throw new Error(`PRICING_FETCH_FAILED: ${error.message}`);
     }
 
@@ -100,7 +89,7 @@ class PricingCacheManager {
 
     // 3. 写入缓存
     await RedisService.kv.setex(cacheKey, ttl, JSON.stringify(data));
-    console.log("💾 Virtual key 价格缓存写入:", virtualKey);
+    logger.info("💾 Virtual key 价格缓存写入:", virtualKey);
 
     return data;
   }
@@ -114,7 +103,7 @@ class PricingCacheManager {
     // 1. 检查缓存
     const cached = await RedisService.kv.get(cacheKey);
     if (cached) {
-      console.log("📦 Customer type 价格缓存命中:", customerTypeId);
+      logger.info("📦 Customer type 价格缓存命中:", customerTypeId);
       return JSON.parse(cached);
     }
 
@@ -124,11 +113,12 @@ class PricingCacheManager {
     });
 
     if (error) {
-      console.error(
-        "❌ Failed to fetch customer type pricing:",
+      logger.error("Failed to fetch customer type pricing", {
         customerTypeId,
-        error,
-      );
+        error: error.message,
+        stack: error.stack,
+        method: "getCustomerTypePricing",
+      });
       throw new Error(`CUSTOMER_TYPE_PRICING_FETCH_FAILED: ${error.message}`);
     }
 
@@ -138,7 +128,7 @@ class PricingCacheManager {
 
     // 3. 写入缓存
     await RedisService.kv.setex(cacheKey, ttl, JSON.stringify(data));
-    console.log("💾 Customer type 价格缓存写入:", customerTypeId);
+    logger.info("💾 Customer type 价格缓存写入:", customerTypeId);
 
     return data;
   }
@@ -162,7 +152,7 @@ class PricingCacheManager {
         k.startsWith(`${provider}:`),
       );
       if (fallbackKey) {
-        console.log(
+        logger.warn(
           `⚠️ Using fallback price for ${provider}:${model} -> ${fallbackKey}`,
         );
         return pricingData.prices[fallbackKey];
@@ -177,13 +167,13 @@ class PricingCacheManager {
    * 刷新缓存
    */
   async refreshVirtualKeyPricing(virtualKey, ttl = TTL) {
-    console.log("🔄 刷新 virtual key 价格缓存:", virtualKey);
+    logger.info("🔄 刷新 virtual key 价格缓存:", virtualKey);
     await this.invalidateVirtualKeyPricing(virtualKey);
     return this.getVirtualKeyPricing(virtualKey, ttl);
   }
 
   async refreshCustomerTypePricing(customerTypeId, ttl = TTL) {
-    console.log("🔄 刷新 customer type 价格缓存:", customerTypeId);
+    logger.info("🔄 刷新 customer type 价格缓存:", customerTypeId);
     await this.invalidateCustomerTypePricing(customerTypeId);
     return this.getCustomerTypePricing(customerTypeId, ttl);
   }
@@ -199,19 +189,19 @@ class PricingCacheManager {
     const contextKey = CACHE_KEYS.BILLING_CONTEXT(virtualKey);
     await RedisService.kv.del(contextKey);
 
-    console.log(`❌ 失效价格和相关缓存: ${virtualKey}`);
+    logger.info(`失效价格和相关缓存: ${virtualKey}`);
   }
 
   async invalidateCustomerTypePricing(customerTypeId) {
     const cacheKey = CACHE_KEYS.CUSTOMER_TYPE_PRICING(customerTypeId);
     await RedisService.kv.del(cacheKey);
-    console.log("❌ Customer type 价格缓存失效:", customerTypeId);
+    logger.info("❌ Customer type 价格缓存失效:", customerTypeId);
   }
 
   async shutdown() {
     if (this.pgClient) {
       await this.pgClient.end();
-      console.log("✅ pricingCacheManager PostgreSQL connection closed");
+      logger.info("✅ pricingCacheManager PostgreSQL connection closed");
     }
   }
 }

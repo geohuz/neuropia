@@ -1,0 +1,65 @@
+{
+  "scenario": "场景1: 正常流程",
+  "startTime": 1765095406811,
+  "endTime": 1765095416953,
+  "steps": [
+    {
+      "name": "注入资金",
+      "status": "success",
+      "details": {
+        "amount": 100,
+        "fundTransactionId": "47",
+        "balanceBefore": "0.000000",
+        "balanceAfter": "100.000000",
+        "accountBalance": "100"
+      }
+    },
+    {
+      "name": "发起API请求",
+      "status": "success",
+      "details": {
+        "requestCount": 3,
+        "requestDetails": [
+          {
+            "requestIndex": 1,
+            "status": "success",
+            "responseId": "chatcmpl-1765095408910",
+            "hasBilling": true
+          },
+          {
+            "requestIndex": 2,
+            "status": "success",
+            "responseId": "chatcmpl-1765095409416",
+            "hasBilling": true
+          },
+          {
+            "requestIndex": 3,
+            "status": "success",
+            "responseId": "chatcmpl-1765095409924",
+            "hasBilling": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "验证审计记录",
+      "status": "failed",
+      "details": {
+        "usageLog": {
+          "total_records": "4",
+          "complete_records": "4",
+          "incomplete_records": "0",
+          "total_cost": "1.596"
+        },
+        "sequence": {
+          "total": "4",
+          "continuous": "4",
+          "discontinuous": "0"
+        }
+      }
+    }
+  ],
+  "errors": [
+    "审计记录不完整或不连续"
+  ]
+}

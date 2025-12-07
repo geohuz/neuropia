@@ -1,9 +1,9 @@
-// neuropia_api_gateway/src/services/configService.js
 const postgrest = require("@shared/clients/postgrest");
 const RedisService = require("@shared/clients/redis_op");
 const schemaValidator = require("../validation/schemaValidator");
 const pricingCacheManager = require("./pricingCacheManager");
 const CACHE_KEYS = require("../constants/cacheKeys");
+const logger = require("@shared/utils/logger"); // 引入 logger
 
 class ConfigService {
   /**
@@ -12,7 +12,7 @@ class ConfigService {
   static async getAllConfigs(userContext, requestBody) {
     try {
       const { virtual_key } = userContext;
-      console.log("获取完整配置:", { virtual_key });
+      logger.info("获取完整配置", { virtual_key });
 
       // ----------------------
       // 1. 获取 virtual_key 配置
@@ -22,10 +22,13 @@ class ConfigService {
       // 验证和补全 metadata
       const validatedConfig = this.validateMetadata(computedConfig);
 
-      console.log("配置获取完成");
+      logger.info("配置获取完成");
       return validatedConfig;
     } catch (error) {
-      console.error("配置获取失败:", error);
+      logger.error("配置获取失败", {
+        error: error.message,
+        stack: error.stack,
+      });
       throw error;
     }
   }
@@ -41,7 +44,7 @@ class ConfigService {
     // ----------------------
     const cached = await RedisService.kv.get(cacheKey);
     if (cached) {
-      console.log("配置缓存命中:", virtualKey);
+      logger.debug("配置缓存命中", { virtualKey });
       return JSON.parse(cached);
     }
 
@@ -51,7 +54,10 @@ class ConfigService {
     const { data, error } = await postgrest.rpc("get_virtualkey_config", {
       p_virtual_key: virtualKey,
     });
-    if (error) throw error;
+    if (error) {
+      logger.error("数据库RPC调用失败", { virtualKey, error });
+      throw error;
+    }
 
     // ----------------------
     // 3. 注入 api_key（根据 provider）
@@ -66,7 +72,7 @@ class ConfigService {
       300,
       JSON.stringify(configWithApiKeys),
     );
-    console.log("配置缓存写入:", virtualKey);
+    logger.info("配置缓存写入", { virtualKey });
 
     return configWithApiKeys;
   }
@@ -77,10 +83,12 @@ class ConfigService {
   static validateMetadata(computedConfig) {
     if (!computedConfig.metadata) {
       computedConfig.metadata = schemaValidator.generateDefaultConfig();
+      logger.debug("metadata 为空，使用默认配置");
     } else {
       computedConfig.metadata = schemaValidator.validateComplete(
         computedConfig.metadata,
       );
+      logger.debug("metadata 验证完成");
     }
     return computedConfig;
   }
@@ -89,7 +97,10 @@ class ConfigService {
    * 降级配置（当上游不可用时）
    */
   static getFallbackConfig(userContext, requestBody) {
-    console.warn("使用降级配置");
+    logger.warn("使用降级配置", {
+      virtual_key: userContext.virtual_key,
+      model: requestBody.model,
+    });
 
     return {
       strategy: {
@@ -130,9 +141,13 @@ class ConfigService {
 
         // 为没有 api_key 的 target 注入
         if (target.provider && !target.api_key) {
+          const apiKey = providerKeys[target.provider];
+          if (!apiKey) {
+            logger.warn(`未找到 ${target.provider} 的 API KEY`, { target });
+          }
           return {
             ...target,
-            api_key: providerKeys[target.provider],
+            api_key: apiKey,
           };
         }
 
@@ -140,10 +155,16 @@ class ConfigService {
       });
     }
 
-    return {
+    const processedConfig = {
       ...config,
       targets: processTargets(config.targets || []),
     };
+
+    logger.debug("API KEY 注入完成", {
+      providerCount: config.targets?.length || 0,
+    });
+
+    return processedConfig;
   }
 }
 

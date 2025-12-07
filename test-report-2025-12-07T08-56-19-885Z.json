@@ -1,0 +1,53 @@
+{
+  "scenario": "场景1: 正常流程",
+  "startTime": 1765097727721,
+  "endTime": 1765097779885,
+  "steps": [
+    {
+      "name": "注入资金",
+      "status": "success",
+      "details": {
+        "amount": 100,
+        "fundTransactionId": "51",
+        "balanceBefore": "0.000000",
+        "balanceAfter": "100.000000",
+        "accountBalance": "100"
+      }
+    },
+    {
+      "name": "发起API请求",
+      "status": "success",
+      "details": {
+        "requestCount": 3,
+        "requestDetails": [
+          {
+            "requestIndex": 1,
+            "status": "success",
+            "responseId": "chatcmpl-1765097729793",
+            "hasBilling": true
+          },
+          {
+            "requestIndex": 2,
+            "status": "success",
+            "responseId": "chatcmpl-1765097730297",
+            "hasBilling": true
+          },
+          {
+            "requestIndex": 3,
+            "status": "success",
+            "responseId": "chatcmpl-1765097730800",
+            "hasBilling": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "验证审计记录",
+      "status": "skipped",
+      "details": {
+        "message": "无usage_log记录"
+      }
+    }
+  ],
+  "errors": []
+}

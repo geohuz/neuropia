@@ -2,6 +2,7 @@
 const RedisService = require("@shared/clients/redis_op");
 const dbWriter = require("./dbWriter");
 const CONFIG = require("./consumerConfig");
+const logger = require("@shared/utils/logger");
 
 const config = {
   ...CONFIG,
@@ -27,7 +28,7 @@ async function startStreamConsumer(userConfig = {}) {
   shouldStopConsuming = false;
   isConsuming = true;
 
-  console.log("🚀 启动Stream消费者:", {
+  logger.info("🚀 启动Stream消费者:", {
     consumerGroup: config.consumerGroup,
     consumerName: config.consumerName,
     numShards: config.numShards,
@@ -47,7 +48,10 @@ async function startStreamConsumer(userConfig = {}) {
     // 3. 启动消费循环
     await consumeLoop(config);
   } catch (error) {
-    console.error("❌ Stream消费者启动失败:", error);
+    logger.error("Stream消费者启动失败:", {
+      error: error.message,
+      stack: error.stack,
+    });
     isConsuming = false;
     throw error;
   } finally {
@@ -75,11 +79,14 @@ async function initConsumerGroups(config) {
         "MKSTREAM", // 如果Stream不存在就创建
       ]);
 
-      console.log(`✅ 初始化消费者组: ${streamKey} -> ${config.consumerGroup}`);
+      logger.info(`✅ 初始化消费者组: ${streamKey} -> ${config.consumerGroup}`);
     } catch (error) {
       // 消费者组可能已存在（BUSYGROUP错误）
       if (!error.message.includes("BUSYGROUP")) {
-        console.error(`❌ 初始化消费者组失败 ${streamKey}:`, error.message);
+        logger.error(`❌ 初始化消费者组失败 ${streamKey}:`, {
+          error: error.message,
+          stack: error.stack,
+        });
         // TODO: 记录到监控
       }
     }
@@ -89,8 +96,15 @@ async function initConsumerGroups(config) {
 /**
  * 主消费循环
  */
+/**
+ * 主消费循环
+ */
 async function consumeLoop(config) {
-  console.log("🔄 进入消费循环...");
+  logger.info("进入消费循环...", {
+    batchMode: config.batchMode,
+    batchSize: config.batchSize,
+    parallelShards: config.parallelShards,
+  });
 
   let loopCounter = 0;
 
@@ -100,9 +114,11 @@ async function consumeLoop(config) {
     let shardIndex = null;
 
     try {
-      // 🎯 定期记录心跳（每100次循环）
+      // 定期记录心跳（每100次循环）
       if (loopCounter % 100 === 0) {
-        console.log(`❤️  消费循环心跳: ${loopCounter}次`);
+        logger.info(`❤️  消费循环心跳: ${loopCounter}次`, {
+          batchMode: config.batchMode,
+        });
       }
 
       // 1. 读取消息（轮询所有分片）
@@ -112,17 +128,28 @@ async function consumeLoop(config) {
 
       // 🎯 检查是否应该停止
       if (shouldStopConsuming) {
-        console.log("🛑 收到停止信号，退出消费循环");
+        logger.info("🛑 收到停止信号，退出消费循环");
         break;
       }
 
       if (messages.length === 0) {
-        // 没有消息，短暂休眠
-        await sleep(config.pollInterval);
+        // 🎯 根据批量模式调整休眠策略
+        if (config.batchMode === "on") {
+          // 批量模式：正常休眠
+          await sleep(config.pollInterval);
+        } else {
+          // 单条模式：短时间休眠，立即重试
+          await sleep(10); // 10ms短休眠
+        }
         continue;
       }
 
-      console.log(`📨 从分片 ${shardIndex} 读取到 ${messages.length} 条消息`);
+      logger.info(`📨 从分片 ${shardIndex} 读取到 ${messages.length} 条消息`, {
+        shardIndex: shardIndex,
+        msgLen: messages.length,
+        batchMode: config.batchMode,
+        expectedBatchSize: config.batchSize,
+      });
 
       // TODO: 监控 - 记录消息读取速率
       // metrics.increment('stream.messages.read', messages.length);
@@ -148,19 +175,20 @@ async function consumeLoop(config) {
       // metrics.timing('stream.processing.latency', processResult.duration);
     } catch (error) {
       // 🎯 在这里处理错误，而不是让它们变成未捕获异常
-      console.error("❌ 消费循环内部错误:", {
+      logger.error("❌ 消费循环内部错误:", {
         message: error.message,
         stack: error.stack,
         loopCount: loopCounter,
+        batchMode: config.batchMode,
       });
 
       // 🎯 检查是否应该停止
       if (shouldStopConsuming) {
-        console.log("🛑 收到停止信号，退出消费循环");
+        logger.info("🛑 收到停止信号，退出消费循环");
         break;
       }
 
-      console.error("❌ 消费循环错误:", error);
+      logger.error("❌ 消费循环错误:", error);
 
       // TODO: 错误分类处理
       // if (isTransientError(error)) {
@@ -176,9 +204,12 @@ async function consumeLoop(config) {
     }
   }
 
-  console.log("✅ 消费循环已停止");
+  logger.info("✅ 消费循环已停止", { batchMode: config.batchMode });
 }
 
+/**
+ * 从所有分片读取消息（轮询）
+ */
 /**
  * 从所有分片读取消息（轮询）
  */
@@ -195,6 +226,9 @@ async function readMessagesFromStreams(config) {
     const streamKey = `${config.streamPrefix}:${shardIndex}`;
 
     try {
+      // 🎯 根据批量模式调整读取数量
+      const readCount = config.batchMode === "on" ? config.batchSize : 1;
+
       // 使用消费者组读取
       const result = await client.sendCommand([
         "XREADGROUP",
@@ -202,7 +236,7 @@ async function readMessagesFromStreams(config) {
         config.consumerGroup,
         config.consumerName,
         "COUNT",
-        config.batchSize.toString(),
+        readCount.toString(),
         "BLOCK",
         config.blockTime.toString(),
         "STREAMS",
@@ -228,7 +262,7 @@ async function readMessagesFromStreams(config) {
         error.message.includes("NOGROUP") ||
         error.message.includes("no such key")
       ) {
-        console.warn(`⚠️ Stream不存在，尝试创建: ${streamKey}`);
+        logger.warn(`⚠️ Stream不存在，尝试创建: ${streamKey}`);
         try {
           await client.sendCommand([
             "XGROUP",
@@ -238,14 +272,14 @@ async function readMessagesFromStreams(config) {
             "0",
             "MKSTREAM",
           ]);
-          console.log(`✅ 重新创建Stream: ${streamKey}`);
+          logger.log(`✅ 重新创建Stream: ${streamKey}`);
         } catch (createError) {
           if (!createError.message.includes("BUSYGROUP")) {
-            console.error(`❌ 创建Stream失败: ${createError.message}`);
+            logger.error(`❌ 创建Stream失败: ${createError.message}`);
           }
         }
       } else {
-        console.error(`❌ 读取分片 ${shardIndex} 失败:`, error.message);
+        logger.error(`❌ 读取分片 ${shardIndex} 失败:`, error.message);
       }
       // 继续尝试下一个分片
     }
@@ -291,7 +325,7 @@ function parseStreamMessages(redisResult, shardIndex) {
       messages.push(message);
     }
   } catch (error) {
-    console.error("❌ 解析Stream消息失败:", error);
+    logger.error("❌ 解析Stream消息失败:", error);
     // TODO: 记录到监控
   }
 
@@ -305,6 +339,12 @@ async function processMessageBatch(messages, config) {
   const startTime = Date.now();
   const processedIds = [];
   const failedMessages = [];
+
+  logger.debug("处理消息批次", {
+    count: messages.length,
+    batchMode: config.batchMode,
+    expectedBatchSize: config.batchSize,
+  });
 
   try {
     // 1. 转换为dbWriter需要的格式
@@ -376,7 +416,7 @@ async function processMessageBatch(messages, config) {
       });
     }
 
-    console.log(`✅ 处理完成: ${writeResult.written_usage_log} usage_log 记录`);
+    logger.info(`✅ 处理完成: ${writeResult.written_usage_log} usage_log 记录`);
 
     return {
       success: true,
@@ -386,7 +426,7 @@ async function processMessageBatch(messages, config) {
       writeResult,
     };
   } catch (error) {
-    console.error("❌ 处理消息批次失败:", error);
+    logger.error("❌ 处理消息批次失败:", error);
 
     return {
       success: false,
@@ -409,6 +449,12 @@ async function acknowledgeMessages(shardIndex, messageIds, config) {
     return;
   }
 
+  logger.debug("发送ACK确认", {
+    shardIndex,
+    count: messageIds.length,
+    batchMode: config.batchMode,
+  });
+
   const streamKey = `${config.streamPrefix}:${shardIndex}`;
   const client = await RedisService.connect();
 
@@ -417,7 +463,7 @@ async function acknowledgeMessages(shardIndex, messageIds, config) {
     for (const messageId of messageIds) {
       // 🎯 检查是否应该停止
       if (shouldStopConsuming) {
-        console.log("🛑 停止过程中，跳过剩余ACK");
+        logger.info("🛑 停止过程中，跳过剩余ACK");
         break;
       }
       await client.sendCommand([
@@ -428,12 +474,12 @@ async function acknowledgeMessages(shardIndex, messageIds, config) {
       ]);
     }
 
-    console.log(`✅ 发送ACK: 分片 ${shardIndex}, ${messageIds.length} 条消息`);
+    logger.info(`✅ 发送ACK: 分片 ${shardIndex}, ${messageIds.length} 条消息`);
 
     // TODO: 监控 - ACK成功率
     // metrics.increment('stream.ack.success', messageIds.length);
   } catch (error) {
-    console.error(`❌ 发送ACK失败 ${streamKey}:`, error);
+    logger.error(`❌ 发送ACK失败 ${streamKey}:`, error);
 
     // TODO: 监控 - ACK失败
     // metrics.increment('stream.ack.failure');
@@ -453,7 +499,7 @@ async function handleFailedMessages(failedMessages, config) {
     return;
   }
 
-  console.warn(`⚠️ 有 ${failedMessages.length} 条消息处理失败`);
+  logger.warn(`⚠️ 有 ${failedMessages.length} 条消息处理失败`);
 
   // TODO: 实现失败处理策略
   // 1. 临时错误：加入重试队列
@@ -462,7 +508,7 @@ async function handleFailedMessages(failedMessages, config) {
 
   // 暂时简单记录日志
   failedMessages.forEach(({ message, error }, index) => {
-    console.error(`失败消息 ${index + 1}:`, {
+    logger.error(`失败消息 ${index + 1}:`, {
       deduction_id: message.deduction_id,
       account_id: message.account_id,
       cost: message.cost,
@@ -483,10 +529,10 @@ function sleep(ms) {
  * 停止消费者
  */
 async function stopConsumer() {
-  console.log("🛑 停止Stream消费者...");
+  logger.info("🛑 停止Stream消费者...");
 
   if (!isConsuming) {
-    console.log("ℹ️ Stream消费者未运行");
+    logger.info("ℹ️ Stream消费者未运行");
     return;
   }
 
@@ -498,14 +544,14 @@ async function stopConsumer() {
   const startWait = Date.now();
 
   while (isConsuming && Date.now() - startWait < maxWaitTime) {
-    console.log("⏳ 等待消费循环停止...");
+    logger.info("⏳ 等待消费循环停止...");
     await sleep(500);
   }
 
   if (isConsuming) {
-    console.warn("⚠️ 消费循环未在10秒内停止，可能卡住了");
+    logger.warn("⚠️ 消费循环未在10秒内停止，可能卡住了");
   } else {
-    console.log("✅ Stream消费者已停止");
+    logger.info("✅ Stream消费者已停止");
   }
 
   return true;
