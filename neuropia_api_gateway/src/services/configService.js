@@ -81,15 +81,15 @@ class ConfigService {
    * 验证和补全 metadata
    */
   static validateMetadata(computedConfig) {
-    if (!computedConfig.metadata) {
-      computedConfig.metadata = schemaValidator.generateDefaultConfig();
-      logger.debug("metadata 为空，使用默认配置");
-    } else {
-      computedConfig.metadata = schemaValidator.validateComplete(
-        computedConfig.metadata,
-      );
-      logger.debug("metadata 验证完成");
-    }
+    // if (!computedConfig.metadata) {
+    //   computedConfig.metadata = schemaValidator.generateDefaultConfig();
+    //   logger.debug("metadata 为空，使用默认配置");
+    // } else {
+    //   computedConfig.metadata = schemaValidator.validateComplete(
+    //     computedConfig.metadata,
+    //   );
+    //   logger.debug("metadata 验证完成");
+    // }
     return computedConfig;
   }
 

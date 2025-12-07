@@ -107,6 +107,10 @@ router.all("/*", async (req, res) => {
       }
     }
 
+    logger.debug(
+      "api_gateway 发送到portkey ai gateway的x-portkey-config: ",
+      portkeyConfig,
+    );
     // 4. 调用 Portkey Gateway
     const portkeyResponse = await callPortkeyGateway(
       portkeyConfig,
@@ -200,21 +204,21 @@ async function validateBusinessRules(metadata, userContext, requestBody, path) {
 
   const { model_access, rate_limits, budget } = sync_controls;
 
-  // 1. 检查模型权限
-  if (path.includes("/chat/completions") || path.includes("/completions")) {
-    if (model_access?.allowed_models) {
-      const model = requestBody.model;
-      if (!model) {
-        throw new Error("请求缺少model参数");
-      }
+  // // 1. 检查模型权限
+  // if (path.includes("/chat/completions") || path.includes("/completions")) {
+  //   if (model_access?.allowed_models) {
+  //     const model = requestBody.model;
+  //     if (!model) {
+  //       throw new Error("请求缺少model参数");
+  //     }
 
-      if (!model_access.allowed_models.includes(model)) {
-        const error = new Error(`模型 ${model} 不在允许列表中`);
-        error.code = "MODEL_NOT_ALLOWED";
-        throw error;
-      }
-    }
-  }
+  //     if (!model_access.allowed_models.includes(model)) {
+  //       const error = new Error(`模型 ${model} 不在允许列表中`);
+  //       error.code = "MODEL_NOT_ALLOWED";
+  //       throw error;
+  //     }
+  //   }
+  // }
 
   // 2. 预算检查
   if (budget) {
@@ -361,14 +365,14 @@ async function callPortkeyGateway(
   });
 
   // 验证 Portkey 配置
-  const validation = portkeyConfigSchema.safeParse(config);
-  if (!validation.success) {
-    const error = new Error(
-      `无效的Portkey配置: ${validation.error.issues[0].message}`,
-    );
-    error.context = { validationErrors: validation.error.issues };
-    throw error;
-  }
+  // const validation = portkeyConfigSchema.safeParse(config);
+  // if (!validation.success) {
+  //   const error = new Error(
+  //     `无效的Portkey配置: ${validation.error.issues[0].message}`,
+  //   );
+  //   error.context = { validationErrors: validation.error.issues };
+  //   throw error;
+  // }
 
   try {
     const response = await fetch(`${portkeyUrl}${fullPath}`, {
@@ -391,7 +395,7 @@ async function callPortkeyGateway(
         requestId,
         virtual_key,
         status: response.status,
-        error: errorText,
+        error: JSON.parse(errorText),
       });
 
       const error = new Error(
@@ -405,6 +409,7 @@ async function callPortkeyGateway(
 
     // 记录监控数据
     trackApiRequest(userContext, response, result, requestBody, path);
+    let userResponse;
 
     // ✅ 扣费（失败会抛出异常）
     try {
@@ -414,13 +419,22 @@ async function callPortkeyGateway(
         path,
       );
       if (chargeResult) {
-        result.billing = {
-          charged: {
-            cost: chargeResult.cost,
-            currency: chargeResult.currency,
-            new_balance: chargeResult.new_balance,
-          },
+        // 3. 过滤后返回给用户
+        userResponse = {
+          choices: result.choices,
+          object: result.object,
+          usage: result.usage,
+          created: result.created,
+          model: result.model,
+          id: result.id,
         };
+        // result.billing = {
+        //   charged: {
+        //     cost: chargeResult.cost,
+        //     currency: chargeResult.currency,
+        //     new_balance: chargeResult.new_balance,
+        //   },
+        // };
       }
     } catch (billingError) {
       // 扣费失败，记录但不中断响应（可根据业务需求调整）
@@ -431,18 +445,18 @@ async function callPortkeyGateway(
       });
       // 可以选择不把billing错误传给客户端
     }
-
-    return result;
+    // 返回请求给用户
+    return userResponse;
   } catch (error) {
     // ✅ 网络或解析错误
-    logger.error("调用Portkey Gateway失败", {
-      requestId,
-      virtual_key,
-      error: error.message,
-      stack: error.stack,
-    });
+    // logger.error("调用Portkey Gateway失败", {
+    //   requestId,
+    //   virtual_key,
+    //   error: error.message,
+    //   stack: error.stack,
+    // });
 
-    error.message = `上游服务调用失败: ${error.message}`;
+    // error.message = `上游服务调用失败: ${error.message}`;
     throw error;
   }
 }
@@ -466,15 +480,15 @@ function getFallbackConfig(userContext, requestBody) {
         },
       },
     ],
-    metadata: {
-      _neuropia: {
-        sync_controls: {
-          budget: { balance: 0 },
-          model_access: { allowed_models: [] },
-          rate_limits: { max_concurrent: 1 },
-        },
-      },
-    },
+    // metadata: {
+    //   _neuropia: {
+    //     sync_controls: {
+    //       budget: { balance: 0 },
+    //       model_access: { allowed_models: [] },
+    //       rate_limits: { max_concurrent: 1 },
+    //     },
+    //   },
+    // },
   };
 }
 

@@ -380,12 +380,6 @@ curl -X POST http://localhost:3001/v1/chat/completions \
 - 平台可以动态轮换API keys而无需用户感知
 - 支持为不同用户组配置不同的provider访问权限
 
-### 
-
-
-
-
-
 ## 你的理解完全正确
 
 在 Portkey Gateway 中，当配置中不设置 `overrideParams` 时，确实可以实现你描述的效果。
