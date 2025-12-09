@@ -1398,56 +1398,6 @@ const configSystem = {
 | **503** | 服务器错误 | 服务不可用     | 触发重试/故障转移，服务过载       |
 | **446** | 专用状态码 | Hook拒绝请求   | Guardrail明确拒绝，不重试         |
 
-# 系统服务架构
-
-```mermaid
-graph TD
-    A[用户AI请求] --> B[Neuropia API Gateway<br/>业务网关]
-    B --> C[调用Config Service<br/>传递用户上下文]
-    C --> D[Neuropia Config Service<br/>配置服务]
-    D --> E[查询数据库<br/>resolve_dynamic_config]
-    E --> F[返回所有配置<br/>包含两部分]
-    F --> G[构建Portkey配置<br/>gateway_routing等]
-    G --> H[返回给API Gateway<br/>包含Portkey配置 + 业务配置]
-    H --> B
-    
-    B --> I[执行业务逻辑<br/>使用业务配置]
-    I --> J[用量统计<br/>rate_limits等]
-    I --> K[计费规则<br/>billing_rules等]
-    I --> L[权限控制<br/>access_control等]
-    
-    B --> M[携带x-portkey-config头<br/>使用Portkey配置]
-    M --> N[Portkey AI Gateway<br/>AI网关]
-    N --> O[路由到AI提供商<br/>OpenAI/Anthropic/Azure等]
-    
-    style B fill:#e1f5fe
-    style D fill:#f3e5f5
-    style N fill:#e8f5e8
-    style F stroke:#ff6b6b,stroke-width:2px
-```
-
-## 各组件职责
-
-### 1. **Neuropia API Gateway** (业务网关)
-
-- 接收用户AI API请求
-- 用户认证、权限检查
-- 调用 Config Service 获取 Portkey 配置
-- **自己执行 rate_limits 等业务限流**
-- 携带 x-portkey-config 转发到 Portkey AI Gateway
-
-### 2. **Neuropia Config Service** (配置服务)
-
-- 接收 API Gateway 的配置请求
-- 查询数据库解析动态配置
-- 构建符合 Portkey Gateway 格式的配置
-- 返回 x-portkey-config 内容
-
-### 3. **Portkey AI Gateway** (AI网关)
-
-- 只处理 AI 请求路由、重试、缓存、负载均衡
-- 不处理业务逻辑，只认 x-portkey-config
-
 # Gateway_routing 初始化数据(根据gateway 文档要求)
 
 ```postgresql

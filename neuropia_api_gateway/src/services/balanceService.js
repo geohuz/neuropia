@@ -298,10 +298,10 @@ class BalanceService {
   /**
    * 核心扣费方法
    */
-  async chargeForUsage(virtualKey, provider, model, usage) {
+  async chargeForUsage(virtualKey, provider, model, usage, traceId) {
     // ✅ 这是边界，需要catch
     try {
-      logger.info("开始扣费", { virtualKey, provider, model });
+      logger.info("开始扣费", { virtualKey, provider, model, traceId });
 
       // 1. 获取上下文（错误自然抛出）
       const context = await this.getBillingContext(virtualKey);
@@ -340,6 +340,7 @@ class BalanceService {
           virtualKey,
           account: `${context.account.type}:${context.account.id}`,
           cost,
+          traceId,
           balance_before: chargeResult.balance_before, // 🆕 添加
           balance_after: chargeResult.new_balance,
         });
@@ -367,10 +368,12 @@ class BalanceService {
           total_tokens: totalTokens,
           balance_before: chargeResult.balance_before, // 扣费前的余额
           balance_after: chargeResult.new_balance, // 扣费后的余额
+          trace_id: traceId
         }).catch((err) => {
           // Stream失败只记录，不影响主流程
           logger.error("Stream写入失败（不影响扣费）", {
             virtualKey,
+            traceId,
             error: err.message,
           });
         });
@@ -383,6 +386,7 @@ class BalanceService {
         virtualKey,
         provider,
         model,
+        traceId,
         error: error.message,
         stack: error.stack, // ✅ 关键：保留堆栈
         context: error.context, // ✅ 如果有额外上下文

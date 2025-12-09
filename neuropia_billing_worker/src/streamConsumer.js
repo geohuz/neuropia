@@ -387,6 +387,7 @@ async function processMessageBatch(messages, config) {
             : null,
         user_id: user_id,
         tenant_id: tenant_id,
+        trace_id: msg.trace_id,
       };
     });
 

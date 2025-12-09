@@ -3,7 +3,7 @@ const pool = require("@shared/clients/pg");
 const logger = require("@shared/utils/logger");
 
 /**
- * 批量写入扣费记录到数据库（只写入usage_log和audit表）
+ * 批量写入扣费记录到数据库（只写入usage_log）
  * @param {Array} messages - Stream消息数组
  * @param {Object} options - 配置选项
  * @returns {Promise<Object>} 写入结果
@@ -72,15 +72,7 @@ async function writeDeductionBatch(messages, options = {}) {
     const usageLogResult = await insertUsageLogs(client, groupedByAccount);
     result.written_usage_log = usageLogResult.inserted;
 
-    // if (usageLogResult.idMap && Object.keys(usageLogResult.idMap).length > 0) {
-    //   // 6. 批量写入 account_balance_audit
-    //   const auditLogResult = await insertAuditLogs(
-    //     client,
-    //     groupedByAccount,
-    //     usageLogResult.idMap,
-    //   );
-    //   result.written_audit_log = auditLogResult.inserted;
-    // }
+    // 写入account_balance?
 
     // 7. 提交事务（不写daily_summary！）
     await client.query("COMMIT");
@@ -251,6 +243,7 @@ function validateAndFilterMessages(messages) {
           msg.balance_before !== undefined ? msg.balance_before : null,
         balance_after:
           msg.balance_after !== undefined ? msg.balance_after : null,
+        trace_id: msg.trace_id || null,
       };
 
       validMessages.push(validatedMsg);
@@ -343,7 +336,8 @@ async function insertUsageLogs(client, accountGroups) {
       $${paramIndex++},   -- 🆕 balance_before
       $${paramIndex++},   -- 🆕 balance_after
       $${paramIndex++},   -- 🆕 user_id
-      $${paramIndex++}    -- 🆕 tenant_id
+      $${paramIndex++},   -- 🆕 tenant_id
+      $${paramIndex++}    -- 🆕 trace_id
     )`);
 
     params.push(
@@ -364,6 +358,7 @@ async function insertUsageLogs(client, accountGroups) {
       msg.balance_after || null, // 🆕
       msg.user_id || null, // 🆕 直接从msg中取 from dbMessage
       msg.tenant_id || null, // 🆕 直接从msg中取
+      msg.trace_id || null,
     );
   }
 
@@ -372,7 +367,7 @@ async function insertUsageLogs(client, accountGroups) {
       deduction_id, virtual_key, account_id, account_type,
       provider, model, cost, currency, created_at,
       input_tokens, output_tokens, metadata_json, sync_status,
-      balance_before, balance_after, user_id, tenant_id
+      balance_before, balance_after, user_id, tenant_id, trace_id
     ) VALUES ${values.join(", ")}
     ON CONFLICT (deduction_id) DO NOTHING
     RETURNING id, deduction_id

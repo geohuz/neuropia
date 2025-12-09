@@ -95,6 +95,7 @@ router.all("/*", async (req, res) => {
           userContext,
           requestBody,
           originalPath,
+          requestId,
         );
       } catch (validationError) {
         // 业务规则验证失败直接返回给客户端
@@ -149,6 +150,7 @@ router.all("/*", async (req, res) => {
       error.message.includes("不在允许列表中")
     ) {
       return res.status(403).json({
+        requestId,
         error: error.message,
         code: "MODEL_NOT_ALLOWED",
         request_id: requestId,
@@ -161,6 +163,7 @@ router.all("/*", async (req, res) => {
     ) {
       return res.status(402).json({
         // 402 Payment Required
+        requestId,
         error: error.message,
         code: "INSUFFICIENT_BALANCE",
         request_id: requestId,
@@ -172,6 +175,7 @@ router.all("/*", async (req, res) => {
       error.message.includes("频率超限")
     ) {
       return res.status(429).json({
+        requestId,
         error: error.message,
         code: "RATE_LIMIT_EXCEEDED",
         request_id: requestId,
@@ -198,7 +202,13 @@ router.all("/*", async (req, res) => {
   }
 });
 
-async function validateBusinessRules(metadata, userContext, requestBody, path) {
+async function validateBusinessRules(
+  metadata,
+  userContext,
+  requestBody,
+  path,
+  requestId,
+) {
   const { sync_controls } = metadata;
   if (!sync_controls) return;
 
@@ -247,7 +257,13 @@ async function validateBusinessRules(metadata, userContext, requestBody, path) {
   }
 }
 
-async function checkBudget(budgetConfig, userContext, requestBody, path) {
+async function checkBudget(
+  budgetConfig,
+  userContext,
+  requestBody,
+  path,
+  requestId,
+) {
   const { virtual_key } = userContext;
 
   logger.debug("开始预算检查", { virtual_key, path });
@@ -263,6 +279,7 @@ async function checkBudget(budgetConfig, userContext, requestBody, path) {
       const error = new Error(`余额不足（需要 >= ${MIN_REQUIRED_BALANCE}）`);
       error.code = "INSUFFICIENT_BALANCE";
       error.context = {
+        requestId,
         virtual_key,
         balance,
         required: MIN_REQUIRED_BALANCE,
@@ -278,13 +295,19 @@ async function checkBudget(budgetConfig, userContext, requestBody, path) {
   }
 }
 
-async function chargeForUsageAfterRequest(virtual_key, portkeyResult, path) {
+async function chargeForUsageAfterRequest(
+  virtual_key,
+  portkeyResult,
+  path,
+  requestId,
+) {
   const usage = portkeyResult?.usage ?? {};
   const provider = portkeyResult?.provider;
   const model = portkeyResult?.model;
 
   if (!provider || !model) {
     logger.warn("Portkey响应缺少provider或model信息，无法精确计费", {
+      requestId,
       virtual_key,
       path,
       portkeyResult,
@@ -309,10 +332,12 @@ async function chargeForUsageAfterRequest(virtual_key, portkeyResult, path) {
         output_tokens: usage.completion_tokens || 0,
         total_tokens: usage.total_tokens || 0,
       },
+      requestId,
     );
 
     logger.info("扣费成功", {
-      virtual_key,
+      trace_id: requestId,
+      virtual_key: virtual_key,
       cost: result.cost,
       currency: result.currency,
       new_balance: result.new_balance,
@@ -322,6 +347,7 @@ async function chargeForUsageAfterRequest(virtual_key, portkeyResult, path) {
   } catch (error) {
     // ✅ 扣费失败是一个严重错误，需要记录并抛出
     logger.error("扣费失败", {
+      trace_id: requestId,
       virtual_key,
       provider,
       model,
@@ -380,6 +406,7 @@ async function callPortkeyGateway(
       headers: {
         "Content-Type": "application/json",
         "x-portkey-config": JSON.stringify(config),
+        "x-portkey-trace-id": requestId, // ✅ 新增：传递给 Portkey Gateway
         "x-portkey-metadata": JSON.stringify({
           environment: process.env.NODE_ENV || "development",
           request_id: requestId,
@@ -417,6 +444,7 @@ async function callPortkeyGateway(
         virtual_key,
         result,
         path,
+        requestId,
       );
       if (chargeResult) {
         // 3. 过滤后返回给用户
@@ -427,6 +455,7 @@ async function callPortkeyGateway(
           created: result.created,
           model: result.model,
           id: result.id,
+          trace_id: requestId,
         };
         // result.billing = {
         //   charged: {
@@ -439,8 +468,8 @@ async function callPortkeyGateway(
     } catch (billingError) {
       // 扣费失败，记录但不中断响应（可根据业务需求调整）
       logger.error("扣费失败但不中断响应", {
-        requestId,
-        virtual_key,
+        trace_id: requestId,
+        virtual_key: virtual_key,
         error: billingError.message,
       });
       // 可以选择不把billing错误传给客户端
