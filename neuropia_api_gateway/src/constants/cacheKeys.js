@@ -15,22 +15,22 @@ const CACHE_KEYS = {
   // 账户余额缓存（按 type + id）
   BALANCE: (type, id) => `balance:${type}:${id}`,
 
-  // ✅ 新增：统一计费上下文缓存（核心）
+  // 统一计费上下文缓存（核心）
   BILLING_CONTEXT: (vk) => `billing:ctx:${vk}`,
 
-  // ✅ 新增：虚拟键到客户类型映射（快速校验用）
+  // 虚拟键到客户类型映射（快速校验用）
   VIRTUAL_KEY_TO_CT: (vk) => `vk:${vk}:ct`,
 
-  // ✅ 新增：价格查找缓存（避免每次遍历prices对象）
+  // 价格查找缓存（避免每次遍历prices对象）
   PRICE_LOOKUP: (vk, provider, model) => `price:${vk}:${provider}:${model}`,
 
-  // ✅ 新增：批量余额查询（可选，用于dashboard等）
+  // 批量余额查询（可选，用于dashboard等）
   BULK_BALANCE_PREFIX: "bulk:balance:",
 
-  // ✅ 新增：审计日志缓存（保存扣费记录）
+  // 审计日志缓存（保存扣费记录）
   CHARGE_AUDIT: (traceId) => `audit:charge:${traceId}`,
 
-  // ✅ 新增：缓存统计（监控用）
+  // 缓存统计（监控用）
   CACHE_STATS: {
     HIT_RATE: "stats:cache:hit_rate",
     LATENCY: "stats:cache:latency",
@@ -38,7 +38,7 @@ const CACHE_KEYS = {
   },
 };
 
-// ✅ 新增：TTL 配置
+// TTL 配置
 CACHE_KEYS.TTL = {
   BILLING_CONTEXT: 1800, // 30分钟（主要受余额影响）
   BALANCE: 60, // 1分钟
@@ -51,7 +51,7 @@ CACHE_KEYS.TTL = {
   VIRTUAL_KEY_TO_CT: 2592000, // 30天
 };
 
-// ✅ 新增：缓存键工具方法
+// 缓存键工具方法
 CACHE_KEYS.UTILS = {
   // 生成批量余额查询的键
   bulkBalanceKey: (accountType, accountIds) => {
