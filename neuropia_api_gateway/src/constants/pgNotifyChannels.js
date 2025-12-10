@@ -12,7 +12,8 @@ const ALL_CHANNELS = {
   // 虚拟密钥相关
   VIRTUAL_KEY_CONFIG_CHANGED: "virtual_key_config_changed",
 
-  // 其他频道...
+  // 网关控制配置变更
+  GATEWAY_CONTROL_CHANGES: "gateway_control_changes",
 };
 
 module.exports = ALL_CHANNELS;

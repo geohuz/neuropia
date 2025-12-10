@@ -20,6 +20,7 @@ const configCacheManager = require("./services/configCacheManager");
 const pricingCacheManager = require("./services/pricingCacheManager");
 const balanceService = require("./services/balanceService");
 const streamCleanupService = require("./services/streamCleanupService");
+const gatewayControlService = require("./services/gatewayControlService");
 
 let server = null;
 let initialized = false;
@@ -44,6 +45,7 @@ async function initialize() {
     await pricingCacheManager.initialize();
 
     await balanceService.initialize();
+    await gatewayControlService.initialize();
 
     streamCleanupService.start();
     logger.info("✅ Stream清理服务已启动");

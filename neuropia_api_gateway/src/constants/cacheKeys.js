@@ -36,6 +36,60 @@ const CACHE_KEYS = {
     LATENCY: "stats:cache:latency",
     INVALIDATION_COUNT: "stats:cache:invalidation_count",
   },
+
+  // ==================== 新增：网关控制配置 ====================
+  // Gateway 控制配置
+  GATEWAY_CONTROL: {
+    // 全局配置（个人用户）
+    GLOBAL: (control_type) => `gateway:control:global:${control_type}`,
+
+    // 客户类型配置
+    CUSTOMER_TYPE: (customer_type_id, control_type) =>
+      `gateway:control:customer_type:${customer_type_id}:${control_type}`,
+
+    // 租户配置 - 基础（不分供应商/模型）
+    TENANT_BASE: (tenant_id, control_type) =>
+      `gateway:control:tenant:${tenant_id}:${control_type}`,
+
+    // 租户配置 - 按供应商
+    TENANT_BY_PROVIDER: (tenant_id, control_type, provider_name) =>
+      `gateway:control:tenant:${tenant_id}:${control_type}:${provider_name}`,
+
+    // 租户配置 - 按模型（无供应商）
+    TENANT_BY_MODEL: (tenant_id, control_type, model_name) =>
+      `gateway:control:tenant:${tenant_id}:${control_type}::${model_name}`,
+
+    // 租户配置 - 按供应商+模型
+    TENANT_BY_PROVIDER_MODEL: (
+      tenant_id,
+      control_type,
+      provider_name,
+      model_name,
+    ) =>
+      `gateway:control:tenant:${tenant_id}:${control_type}:${provider_name}:${model_name}`,
+  },
+
+  // Gateway 限流计数器
+  GATEWAY_RATE_LIMIT: {
+    // TPM 计数器
+    TPM: (tenant_id, provider_name, model_name, window_start) => {
+      let key = `gateway:ratelimit:tpm:${tenant_id}`;
+      if (provider_name) key += `:${provider_name}`;
+      if (model_name) key += `:${model_name}`;
+      return `${key}:${window_start}`;
+    },
+
+    // RPM 计数器
+    RPM: (tenant_id, provider_name, window_start) => {
+      let key = `gateway:ratelimit:rpm:${tenant_id}`;
+      if (provider_name) key += `:${provider_name}`;
+      return `${key}:${window_start}`;
+    },
+
+    // 个人用户 TPM/RPM 计数器
+    USER: (user_id, control_type, window_start) =>
+      `gateway:ratelimit:${control_type}:user:${user_id}:${window_start}`,
+  },
 };
 
 // TTL 配置
@@ -49,6 +103,17 @@ CACHE_KEYS.TTL = {
   PRICE_LOOKUP: 2592000, // 30天
   CHARGE_AUDIT: 604800, // 7天
   VIRTUAL_KEY_TO_CT: 2592000, // 30天
+
+  // 网关控制配置TTL - 永不过期（靠notify失效）
+  GATEWAY_CONTROL: 0, // 0表示永不过期，只靠notify失效
+
+  // 限流计数器TTL - 自动过期
+  RATE_LIMIT_TPM: 120, // 2分钟（比60秒长，确保时间窗口覆盖）
+  RATE_LIMIT_RPM: 120,
+  RATE_LIMIT_USER: 120,
+
+  // 告警标记TTL（避免重复告警）
+  SOFT_LIMIT_ALERT: 300, // 5分钟内不重复告警
 };
 
 // 缓存键工具方法
@@ -74,6 +139,96 @@ CACHE_KEYS.UTILS = {
   extractAccountFromBalance: (key) => {
     const parts = key.split(":");
     return { type: parts[1], id: parts[2] };
+  },
+
+  // Gateway 相关工具
+  isGatewayControlKey: (key) => key.startsWith("gateway:control:"),
+  isRateLimitKey: (key) => key.startsWith("gateway:ratelimit:"),
+
+  // 从控制配置键提取信息
+  extractFromControlKey: (key) => {
+    // gateway:control:{target_type}:{target_id}:{control_type}[:{provider_name}[:{model_name}]]
+    const parts = key.split(":");
+    if (parts.length < 4) return null;
+
+    const result = {
+      target_type: parts[2],
+      control_type: parts[4],
+    };
+
+    if (parts[2] !== "global") {
+      result.target_id = parts[3];
+    }
+
+    if (parts.length > 5) {
+      result.provider_name = parts[5] || null;
+    }
+
+    if (parts.length > 6) {
+      result.model_name = parts[6] || null;
+    }
+
+    return result;
+  },
+
+  // 从限流计数器键提取信息
+  extractFromRateLimitKey: (key) => {
+    // gateway:ratelimit:{type}:{tenant_id|user_id}[:{provider_name}[:{model_name}]]:{window_start}
+    const parts = key.split(":");
+    if (parts.length < 5) return null;
+
+    const result = {
+      type: parts[2], // tpm 或 rpm
+      window_start: parseInt(parts[parts.length - 1]),
+    };
+
+    if (parts[3] === "user") {
+      result.user_id = parts[4];
+    } else {
+      result.tenant_id = parts[3];
+      if (parts.length > 5 && parts[4]) {
+        result.provider_name = parts[4];
+      }
+      if (parts.length > 6 && parts[5]) {
+        result.model_name = parts[5];
+      }
+    }
+
+    return result;
+  },
+
+  // 生成限流计数器键
+  generateRateLimitKey: (params) => {
+    const {
+      type, // tpm 或 rpm
+      tenant_id,
+      user_id,
+      provider_name,
+      model_name,
+      window_size = 60,
+    } = params;
+
+    const window_start =
+      Math.floor(Date.now() / 1000 / window_size) * window_size;
+
+    if (user_id) {
+      return CACHE_KEYS.GATEWAY_RATE_LIMIT.USER(user_id, type, window_start);
+    }
+
+    if (type === "tpm") {
+      return CACHE_KEYS.GATEWAY_RATE_LIMIT.TPM(
+        tenant_id,
+        provider_name,
+        model_name,
+        window_start,
+      );
+    } else {
+      return CACHE_KEYS.GATEWAY_RATE_LIMIT.RPM(
+        tenant_id,
+        provider_name,
+        window_start,
+      );
+    }
   },
 };
 

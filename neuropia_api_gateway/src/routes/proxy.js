@@ -5,15 +5,15 @@ const BalanceService = require("../services/balanceService");
 const logger = require("@shared/utils/logger"); // 假设你创建了logger
 const express = require("express");
 const router = express.Router();
-
-const { handleTestMode } = require("./testModeHandler");
+const GatewayControlService = require("../services/gatewayControlService");
+// const { handleTestMode } = require("./testModeHandler");
 
 const {
   trackApiRequest,
   trackError,
 } = require("../services/monitoringService");
 
-const MIN_REQUIRED_BALANCE = 0.0005;
+// const MIN_REQUIRED_BALANCE = 0.0005;
 
 router.all("/*", async (req, res) => {
   const startTime = Date.now();
@@ -33,24 +33,24 @@ router.all("/*", async (req, res) => {
     });
 
     // 🎯 在这里插入测试模式检测
-    const isTestRequest = virtual_key.startsWith("test_vk_");
+    // const isTestRequest = virtual_key.startsWith("test_vk_");
 
-    if (isTestRequest) {
-      logger.info("测试模式请求", {
-        traceId,
-        virtual_key,
-      });
+    // if (isTestRequest) {
+    //   logger.info("测试模式请求", {
+    //     traceId,
+    //     virtual_key,
+    //   });
 
-      // 测试模式：模拟AI响应 + 真实扣费
-      return await handleTestMode(req, res, {
-        traceId,
-        userContext,
-        // portkeyConfig: {},
-        requestBody,
-        // originalPath,
-        startTime,
-      });
-    }
+    //   // 测试模式：模拟AI响应 + 真实扣费
+    //   return await handleTestMode(req, res, {
+    //     traceId,
+    //     userContext,
+    //     // portkeyConfig: {},
+    //     requestBody,
+    //     // originalPath,
+    //     startTime,
+    //   });
+    // }
 
     // 1. 获取配置（失败直接抛出）
     let portkeyConfig;
@@ -266,29 +266,113 @@ async function checkBudget(
 ) {
   const { virtual_key } = userContext;
 
-  logger.debug("开始预算检查", { virtual_key, path });
+  logger.debug("[BALANCE_CHECK] 开始余额检查", {
+    traceId,
+    virtual_key,
+    path,
+    timestamp: new Date().toISOString(),
+  });
 
   try {
     // ✅ 这里直接让错误自然抛出
     const context = await BalanceService.getBillingContext(virtual_key);
-
     const balance = Number(context.account.balance ?? 0);
-    logger.debug("账户余额", { virtual_key, balance });
 
-    if (balance < MIN_REQUIRED_BALANCE) {
-      const error = new Error(`余额不足（需要 >= ${MIN_REQUIRED_BALANCE}）`);
+    // logger.debug("账户余额", { virtual_key, balance });
+    logger.info("[BALANCE_CHECK] 账户信息", {
+      traceId,
+      virtual_key,
+      balance: balance.toFixed(4),
+      account_type: context.account.account_type,
+      account_id: context.account.account_id,
+      customer_type_id: context.account.customer_type_id,
+    });
+
+    // 获取动态限额
+    logger.debug("[BALANCE_CHECK] 调用GatewayControlService获取限额");
+    const limits = await GatewayControlService.getLimits({
+      account_type: context.account.account_type,
+      account_id: context.account.account_id,
+      customer_type_id: context.account.customer_type_id,
+    });
+
+    // 计算差值（便于分析）
+    const diffToSoft = (balance - limits.soft_limit).toFixed(4);
+    const diffToHard = (balance - limits.hard_limit).toFixed(4);
+
+    logger.info("[BALANCE_CHECK] 限额检查详情", {
+      traceId,
+      virtual_key,
+      current_balance: balance.toFixed(4),
+      soft_limit: limits.soft_limit,
+      hard_limit: limits.hard_limit,
+      diff_to_soft: diffToSoft,
+      diff_to_hard: diffToHard,
+      status:
+        balance > limits.soft_limit
+          ? "正常"
+          : balance > limits.hard_limit
+            ? "告警"
+            : "拒绝",
+    });
+
+    // 检查硬限额（拒绝请求）
+    if (balance <= limits.hard_limit) {
+      logger.warn("[BALANCE_CHECK] ❌ 余额低于硬限额，拒绝请求", {
+        traceId,
+        virtual_key,
+        balance: balance.toFixed(4),
+        hard_limit: limits.hard_limit,
+        deficit: (limits.hard_limit - balance).toFixed(4),
+        account_type: context.account.account_type,
+        action: "REJECT_REQUEST",
+      });
+
+      const error = new Error(
+        `余额不足: ${balance} <= ${limits.hard_limit} (硬限额)`,
+      );
       error.code = "INSUFFICIENT_BALANCE";
       error.context = {
         traceId,
         virtual_key,
         balance,
-        required: MIN_REQUIRED_BALANCE,
+        hard_limit: limits.hard_limit,
+        account_type: context.account.account_type,
       };
       throw error;
     }
 
+    // 检查软限额（告警但不拒绝）
+    if (balance <= limits.soft_limit) {
+      logger.warn("[BALANCE_CHECK] ⚠️ 余额低于软限额，告警", {
+        traceId,
+        virtual_key,
+        balance: balance.toFixed(4),
+        soft_limit: limits.soft_limit,
+        deficit: (limits.soft_limit - balance).toFixed(4),
+        account_type: context.account.account_type,
+        action: "SEND_ALERT_ONLY",
+      });
+    } else {
+      logger.debug("[BALANCE_CHECK] ✅ 余额正常", {
+        traceId,
+        virtual_key,
+        balance: balance.toFixed(4),
+        safe_margin: diffToSoft,
+        status: "OK",
+      });
+    }
+
     return context;
   } catch (error) {
+    logger.error("[BALANCE_CHECK] ❌ 余额检查失败", {
+      traceId,
+      virtual_key,
+      error: error.message,
+      error_code: error.code,
+      failure_point:
+        error.code === "INSUFFICIENT_BALANCE" ? "HARD_LIMIT_CHECK" : "OTHER",
+    });
     // ✅ 在原始错误上添加更多上下文
     error.message = `预算检查失败 [${virtual_key}]: ${error.message}`;
     throw error;

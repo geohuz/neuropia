@@ -538,3 +538,24 @@ WHERE target_type = 'tenant'
 }
 ```
 
+# 缓存设计
+
+## 缓存键设计说明：
+
+### 1. **控制配置键**：
+
+- `gateway:control:global:{control_type}` - 全局配置
+- `gateway:control:customer_type:{ct_id}:{control_type}` - 客户类型配置
+- `gateway:control:tenant:{tenant_id}:{control_type}:{provider}:{model}` - 租户配置（支持多维度）
+
+### 2. **限流计数器键**：
+
+- 自动包含时间窗口，过期自动清理
+- 支持个人用户和租户
+- 租户支持供应商/模型维度
+
+### 3. **TTL策略**：
+
+- **配置数据**：永不过期（靠notify失效）
+- **计数器**：短期自动过期
+- **告警标记**：短期避免重复告警

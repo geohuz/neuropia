@@ -85,6 +85,7 @@ async function forceReconnect() {
 // ------------------------------
 const kv = {
   get: async (key) => (await getClient()).get(key),
+  set: async (key, val) => (await getClient()).set(key, val),
   setex: async (key, ttl, val) => (await getClient()).setEx(key, ttl, val),
   keys: async (pattern) => (await getClient()).keys(pattern),
   del: async (...keys) => (await getClient()).del(keys),
