@@ -720,7 +720,7 @@ class ReconciliationWorker {
 
 * 消费限额 
 
- 1. 个人余额告警
+ 1. 个人最小余额告警
 
  2. tenant 消费限额 
 
@@ -737,8 +737,7 @@ class ReconciliationWorker {
    * 其次应该有个表记录事件, 同时作为异步通知的状态(暂时不考虑具体实现)
 2. api_gateway
    * 缓存: 全局个人余额告警阈值, 用以判断何时出发告警. Tenant 消费限额告警阈值, 以确定何时告警/拒绝请求. 
-   * 监听器, 监听配置变化失效缓存并获取新的值
-   * 触发: 触发行为并记录
+   * pg listener监听, 监听gateay配置变化失效缓存并获取新的值
 
 ```postgresql
 CREATE TABLE IF NOT EXISTS data.gateway_control_config
@@ -761,6 +760,27 @@ CREATE TABLE IF NOT EXISTS data.gateway_control_config
     CONSTRAINT gateway_control_config_target_type_check CHECK (target_type = ANY (ARRAY['global'::text, 'tenant'::text, 'customer_type'::text])),
     CONSTRAINT valid_window CHECK ((control_type = ANY (ARRAY['tpm'::text, 'rpm'::text])) AND time_window_seconds IS NOT NULL OR (control_type <> ALL (ARRAY['tpm'::text, 'rpm'::text])) AND time_window_seconds IS NULL)
 )
+
+COMMENT ON TABLE data.gateway_control_config
+    IS 'API网关控制配置表';
+
+COMMENT ON COLUMN data.gateway_control_config.target_type
+    IS '控制目标类型: global/tenant/customer_type';
+
+COMMENT ON COLUMN data.gateway_control_config.target_id
+    IS 'tenant_id或customer_type_id，global时为NULL';
+
+COMMENT ON COLUMN data.gateway_control_config.control_type
+    IS '控制类型: 余额告警/软硬限额/TPM/RPM';
+
+COMMENT ON COLUMN data.gateway_control_config.control_value
+    IS '控制阈值';
+
+COMMENT ON COLUMN data.gateway_control_config.time_window_seconds
+    IS '时间窗口秒数(TPM/RPM用)';
+    
+COMMENT ON TRIGGER trg_check_gateway_control_target ON data.gateway_control_config
+    IS '确保target_id引用正确的实体';
 ```
 
 ```postgresql
