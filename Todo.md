@@ -740,6 +740,64 @@ class ReconciliationWorker {
    * 监听器, 监听配置变化失效缓存并获取新的值
    * 触发: 触发行为并记录
 
+```postgresql
+CREATE TABLE IF NOT EXISTS data.gateway_control_config
+(
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    target_type text COLLATE pg_catalog."default" NOT NULL,
+    target_id uuid,
+    control_type text COLLATE pg_catalog."default" NOT NULL,
+    control_value numeric NOT NULL,
+    currency text COLLATE pg_catalog."default" DEFAULT 'USD'::text,
+    time_window_seconds integer,
+    is_active boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    created_by uuid,
+    updated_by uuid,
+    CONSTRAINT gateway_control_config_pkey PRIMARY KEY (id),
+    CONSTRAINT unique_control UNIQUE (target_type, target_id, control_type),
+    CONSTRAINT gateway_control_config_control_type_check CHECK (control_type = ANY (ARRAY['balance_alert'::text, 'soft_limit'::text, 'hard_limit'::text, 'tpm'::text, 'rpm'::text])),
+    CONSTRAINT gateway_control_config_target_type_check CHECK (target_type = ANY (ARRAY['global'::text, 'tenant'::text, 'customer_type'::text])),
+    CONSTRAINT valid_window CHECK ((control_type = ANY (ARRAY['tpm'::text, 'rpm'::text])) AND time_window_seconds IS NOT NULL OR (control_type <> ALL (ARRAY['tpm'::text, 'rpm'::text])) AND time_window_seconds IS NULL)
+)
+```
+
+```postgresql
+CREATE TABLE IF NOT EXISTS data.gateway_limit_events
+(
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    config_id uuid,
+    event_type text COLLATE pg_catalog."default" NOT NULL,
+    current_value numeric NOT NULL,
+    limit_value numeric NOT NULL,
+    currency text COLLATE pg_catalog."default",
+    request_id text COLLATE pg_catalog."default",
+    user_id uuid,
+    tenant_id uuid,
+    api_endpoint text COLLATE pg_catalog."default",
+    http_method text COLLATE pg_catalog."default",
+    notification_status text COLLATE pg_catalog."default" DEFAULT 'pending'::text,
+    notification_retries integer DEFAULT 0,
+    last_notification_attempt timestamp with time zone,
+    notified_at timestamp with time zone,
+    error_message text COLLATE pg_catalog."default",
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT now(),
+    CONSTRAINT gateway_limit_events_pkey PRIMARY KEY (id),
+    CONSTRAINT gateway_limit_events_config_id_fkey FOREIGN KEY (config_id)
+        REFERENCES data.gateway_control_config (id) MATCH SIMPLE
+        ON UPDATE NO ACTION
+        ON DELETE SET NULL,
+    CONSTRAINT gateway_limit_events_event_type_check CHECK (event_type = ANY (ARRAY['balance_alert'::text, 'soft_limit_hit'::text, 'hard_limit_reject'::text, 'tpm_exceeded'::text, 'rpm_exceeded'::text])),
+    CONSTRAINT gateway_limit_events_notification_status_check CHECK (notification_status = ANY (ARRAY['pending'::text, 'processing'::text, 'sent'::text, 'failed'::text]))
+)
+```
+
+
+
+
+
 完全正确。**有了 trace_id，你们的系统从“能用”直接跃迁到“可观测、可审计、可排障、可追责的企业级架构”。**
 
 你的那句话——
@@ -769,7 +827,7 @@ class ReconciliationWorker {
 - HTTP 请求里带 trace_id
 - usage_log 存 trace_id
 - error_log 存 trace_id
-- balanceService 扣费也存 trace_id
+- balanceService 扣费也存 trace_id....
 
 > 于是 *整个链路是一根线，你能从头跟到底*。
 
@@ -913,6 +971,19 @@ await balanceService.deductCost({
 ```
 
 这样整个系统被一根线连起来了。
+
+## todo:
+
+monitoring service: requestId/traceId : 已经完成
+
+```
+2025-12-09T08:40:17.793Z [info] 请求处理完成 {
+  "requestId": "req_1765269616686_nx1ofhtpa",
+
+---> 都改成traceId
+```
+
+
 
 ------
 
@@ -1074,4 +1145,14 @@ CREATE TABLE IF NOT EXISTS data.audit_trail (
 
 你们现在 usage_log 已经非常专业了
  只需加 audit_trail，你们就具备完整企业 SaaS 的账务透明度。
+
+# 还缺少provider报告
+
+但是usage里面已经有详细内容应该可以. 需要确认!
+
+# api_gateway control
+
+消费限额, tpm, rpm
+
+# 以及全链路请求 audit trail
 

@@ -28,7 +28,7 @@ const CACHE_KEYS = {
   BULK_BALANCE_PREFIX: "bulk:balance:",
 
   // ✅ 新增：审计日志缓存（保存扣费记录）
-  CHARGE_AUDIT: (requestId) => `audit:charge:${requestId}`,
+  CHARGE_AUDIT: (traceId) => `audit:charge:${traceId}`,
 
   // ✅ 新增：缓存统计（监控用）
   CACHE_STATS: {
