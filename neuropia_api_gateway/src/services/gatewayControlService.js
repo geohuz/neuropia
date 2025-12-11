@@ -243,11 +243,8 @@ class GatewayControlService {
 
       const result = await RedisService.kv.eval(
         luaScript,
-        1,
-        key,
-        limit,
-        tokens,
-        window,
+        [key],
+        [limit, tokens, window],
       );
 
       const [allowed, current, remaining] = result;
@@ -264,6 +261,7 @@ class GatewayControlService {
     } catch (error) {
       logger.error(`[RATE_LIMIT_${type.toUpperCase()}] 检查失败`, {
         error: error.message,
+        stack: error.stack,
         user,
         provider,
         model,
@@ -274,6 +272,7 @@ class GatewayControlService {
         remaining: Infinity,
         reset: 0,
         error: error.message,
+        stack: error.stack,
       };
     }
   }

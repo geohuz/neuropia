@@ -102,10 +102,10 @@ router.all("/*", async (req, res) => {
       throw validationError; // 继续向上抛，让上层处理HTTP响应
     }
 
-    logger.debug(
-      "api_gateway 发送到portkey ai gateway的x-portkey-config: ",
-      portkeyConfig,
-    );
+    // logger.debug(
+    //   "api_gateway 发送到portkey ai gateway的x-portkey-config: ",
+    //   portkeyConfig,
+    // );
     // 4. 调用 Portkey Gateway
     const portkeyResponse = await callPortkeyGateway(
       portkeyConfig,
@@ -355,14 +355,6 @@ async function chargeForUsageAfterRequest(
       },
       traceId,
     );
-
-    logger.info("扣费成功", {
-      trace_id: traceId,
-      virtual_key: virtual_key,
-      cost: result.cost,
-      currency: result.currency,
-      new_balance: result.new_balance,
-    });
 
     return result;
   } catch (error) {

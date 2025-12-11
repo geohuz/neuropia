@@ -377,15 +377,8 @@ class BalanceService {
   async chargeForUsage(virtualKey, provider, model, usage, traceId) {
     // ✅ 这是边界，需要catch
     try {
-      logger.info("开始扣费", { virtualKey, provider, model, traceId });
-
       // 1. 获取上下文（错误自然抛出）
       const context = await this.getBillingContext(virtualKey);
-
-      logger.info("chargeForUsage开始", {
-        virtualKey,
-        context_balance: context.account.balance,
-      });
 
       // 2. 计算费用（错误自然抛出）
       const calculation = await this.calculateCost(
@@ -413,10 +406,10 @@ class BalanceService {
       // 4. 扣费成功，异步写入Stream
       if (chargeResult.ok) {
         logger.info("扣费成功", {
+          traceId,
           virtualKey,
           account: `${context.account.type}:${context.account.id}`,
           cost,
-          traceId,
           balance_before: chargeResult.balance_before, // 🆕 添加
           balance_after: chargeResult.new_balance,
         });
