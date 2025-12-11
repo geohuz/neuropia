@@ -1,7 +1,7 @@
 const postgrest = require("@shared/clients/postgrest");
 const RedisService = require("@shared/clients/redis_op");
-const schemaValidator = require("../validation/schemaValidator");
-const pricingCacheManager = require("./pricingCacheManager");
+// const schemaValidator = require("../validation/schemaValidator");
+// const pricingCacheManager = require("./pricingCacheManager");
 const CACHE_KEYS = require("../constants/cacheKeys");
 const logger = require("@shared/utils/logger"); // 引入 logger
 
@@ -19,11 +19,8 @@ class ConfigService {
       // ----------------------
       // 直接获取配置（数据库函数已包含所有验证）
       const computedConfig = await this.getVirtualKeyConfig(virtual_key);
-      // 验证和补全 metadata
-      const validatedConfig = this.validateMetadata(computedConfig);
-
       logger.info("配置获取完成");
-      return validatedConfig;
+      return computedConfig;
     } catch (error) {
       logger.error("配置获取失败", {
         error: error.message,
@@ -39,18 +36,14 @@ class ConfigService {
   static async getVirtualKeyConfig(virtualKey) {
     const cacheKey = CACHE_KEYS.VIRTUAL_KEY_CONFIG(virtualKey);
 
-    // ----------------------
     // 1. 读取缓存
-    // ----------------------
     const cached = await RedisService.kv.get(cacheKey);
     if (cached) {
       logger.debug("配置缓存命中", { virtualKey });
       return JSON.parse(cached);
     }
 
-    // ----------------------
     // 2. 调用数据库 RPC 查询配置
-    // ----------------------
     const { data, error } = await postgrest.rpc("get_virtualkey_config", {
       p_virtual_key: virtualKey,
     });
@@ -59,14 +52,10 @@ class ConfigService {
       throw error;
     }
 
-    // ----------------------
     // 3. 注入 api_key（根据 provider）
-    // ----------------------
     const configWithApiKeys = this.injectApiKeys(data);
 
-    // ----------------------
     // 4. 写入缓存（TTL: 300 秒）
-    // ----------------------
     await RedisService.kv.setex(
       cacheKey,
       300,
@@ -75,22 +64,6 @@ class ConfigService {
     logger.info("配置缓存写入", { virtualKey });
 
     return configWithApiKeys;
-  }
-
-  /**
-   * 验证和补全 metadata
-   */
-  static validateMetadata(computedConfig) {
-    // if (!computedConfig.metadata) {
-    //   computedConfig.metadata = schemaValidator.generateDefaultConfig();
-    //   logger.debug("metadata 为空，使用默认配置");
-    // } else {
-    //   computedConfig.metadata = schemaValidator.validateComplete(
-    //     computedConfig.metadata,
-    //   );
-    //   logger.debug("metadata 验证完成");
-    // }
-    return computedConfig;
   }
 
   /**
@@ -115,7 +88,7 @@ class ConfigService {
           },
         },
       ],
-      metadata: schemaValidator.generateDefaultConfig(),
+      // metadata: schemaValidator.generateDefaultConfig(),
     };
   }
 

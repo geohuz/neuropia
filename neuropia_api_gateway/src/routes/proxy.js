@@ -1,7 +1,7 @@
 // neuropia_api_gateway/src/routes/proxy.js
-const { portkeyConfigSchema } = require("../validation/portkey_schema_config");
+// const { portkeyConfigSchema } = require("../validation/portkey_schema_config");
 const { ConfigService } = require("../services/configService");
-const BalanceService = require("../services/balanceService");
+const balanceService = require("../services/balanceService");
 const logger = require("@shared/utils/logger"); // 假设你创建了logger
 const express = require("express");
 const router = express.Router();
@@ -12,8 +12,6 @@ const {
   trackApiRequest,
   trackError,
 } = require("../services/monitoringService");
-
-// const MIN_REQUIRED_BALANCE = 0.0005;
 
 router.all("/*", async (req, res) => {
   const startTime = Date.now();
@@ -87,25 +85,21 @@ router.all("/*", async (req, res) => {
     }
 
     // 3. 业务规则验证
-    const metadata = portkeyConfig.metadata?._neuropia;
-    if (metadata) {
-      try {
-        await validateBusinessRules(
-          metadata,
-          userContext,
-          requestBody,
-          originalPath,
-          traceId,
-        );
-      } catch (validationError) {
-        // 业务规则验证失败直接返回给客户端
-        logger.warn("业务规则验证失败", {
-          traceId,
-          virtual_key,
-          error: validationError.message,
-        });
-        throw validationError; // 继续向上抛，让上层处理HTTP响应
-      }
+    try {
+      await validateBusinessRules(
+        userContext,
+        requestBody,
+        originalPath,
+        traceId,
+      );
+    } catch (validationError) {
+      // 业务规则验证失败直接返回给客户端
+      logger.warn("业务规则验证失败", {
+        traceId,
+        virtual_key,
+        error: validationError.message,
+      });
+      throw validationError; // 继续向上抛，让上层处理HTTP响应
     }
 
     logger.debug(
@@ -202,17 +196,13 @@ router.all("/*", async (req, res) => {
   }
 });
 
-async function validateBusinessRules(
-  metadata,
-  userContext,
-  requestBody,
-  path,
-  traceId,
-) {
+async function validateBusinessRules(userContext, requestBody, path, traceId) {
+  /*
   const { sync_controls } = metadata;
   if (!sync_controls) return;
 
   const { model_access, rate_limits, budget } = sync_controls;
+  */
 
   // // 1. 检查模型权限
   // if (path.includes("/chat/completions") || path.includes("/completions")) {
@@ -231,29 +221,26 @@ async function validateBusinessRules(
   // }
 
   // 2. 预算检查
-  if (budget) {
-    try {
-      const billingContext = await checkBudget(
-        budget,
-        userContext,
-        requestBody,
-        path,
-      );
-      userContext.billingContext = billingContext;
-    } catch (budgetError) {
-      // 预算检查失败，直接抛出
-      throw budgetError;
-    }
+  try {
+    const billingContext = await checkBudget(
+      {},
+      userContext,
+      requestBody,
+      path,
+      traceId,
+    );
+    userContext.billingContext = billingContext;
+  } catch (budgetError) {
+    // 预算检查失败，直接抛出
+    throw budgetError;
   }
 
   // 3. 限流检查
-  if (rate_limits) {
-    try {
-      await checkRateLimits(rate_limits, userContext, requestBody, path);
-    } catch (rateLimitError) {
-      rateLimitError.code = "RATE_LIMIT_EXCEEDED";
-      throw rateLimitError;
-    }
+  try {
+    await checkRateLimits(userContext, requestBody, path, traceId);
+  } catch (rateLimitError) {
+    rateLimitError.code = "RATE_LIMIT_EXCEEDED";
+    throw rateLimitError;
   }
 }
 
@@ -266,116 +253,66 @@ async function checkBudget(
 ) {
   const { virtual_key } = userContext;
 
-  logger.debug("[BALANCE_CHECK] 开始余额检查", {
-    traceId,
-    virtual_key,
-    path,
-    timestamp: new Date().toISOString(),
-  });
-
   try {
-    // ✅ 这里直接让错误自然抛出
-    const context = await BalanceService.getBillingContext(virtual_key);
-    const balance = Number(context.account.balance ?? 0);
+    const billingContext = await balanceService.getBillingContext(virtual_key);
+    const account = billingContext.account;
 
-    // logger.debug("账户余额", { virtual_key, balance });
-    logger.info("[BALANCE_CHECK] 账户信息", {
-      traceId,
-      virtual_key,
-      balance: balance.toFixed(4),
-      account_type: context.account.account_type,
-      account_id: context.account.account_id,
-      customer_type_id: context.account.customer_type_id,
-    });
+    const user = {
+      tenant_id: account.type === "tenant" ? account.account_owner_id : null,
+      customer_type: account.customer_type_id,
+      id: account.type === "user" ? account.account_owner_id : null,
+    };
 
-    // 获取动态限额
-    logger.debug("[BALANCE_CHECK] 调用GatewayControlService获取限额");
-    const limits = await GatewayControlService.getLimits({
-      account_type: context.account.account_type,
-      account_id: context.account.account_id,
-      customer_type_id: context.account.customer_type_id,
-    });
+    const balanceCheckResult = await GatewayControlService.checkBalance(
+      user,
+      0, // 预估费用（可为0，如果不需要检查余额是否足够支付）
+    );
 
-    // 计算差值（便于分析）
-    const diffToSoft = (balance - limits.soft_limit).toFixed(4);
-    const diffToHard = (balance - limits.hard_limit).toFixed(4);
+    if (!balanceCheckResult.allowed) {
+      // 余额不足或触发硬限制
+      let errorMsg;
+      if (balanceCheckResult.reason === "HARD_LIMIT_EXCEEDED") {
+        errorMsg = `余额不足: ${balanceCheckResult.balance.toFixed(4)} <= ${balanceCheckResult.limit_value} (硬限额)`;
+      } else if (balanceCheckResult.reason === "INSUFFICIENT_BALANCE") {
+        errorMsg = `余额不足支付请求: ${balanceCheckResult.balance.toFixed(4)} < ${balanceCheckResult.required}`;
+      } else {
+        errorMsg = `余额检查失败: ${balanceCheckResult.reason}`;
+      }
 
-    logger.info("[BALANCE_CHECK] 限额检查详情", {
-      traceId,
-      virtual_key,
-      current_balance: balance.toFixed(4),
-      soft_limit: limits.soft_limit,
-      hard_limit: limits.hard_limit,
-      diff_to_soft: diffToSoft,
-      diff_to_hard: diffToHard,
-      status:
-        balance > limits.soft_limit
-          ? "正常"
-          : balance > limits.hard_limit
-            ? "告警"
-            : "拒绝",
-    });
-
-    // 检查硬限额（拒绝请求）
-    if (balance <= limits.hard_limit) {
-      logger.warn("[BALANCE_CHECK] ❌ 余额低于硬限额，拒绝请求", {
-        traceId,
-        virtual_key,
-        balance: balance.toFixed(4),
-        hard_limit: limits.hard_limit,
-        deficit: (limits.hard_limit - balance).toFixed(4),
-        account_type: context.account.account_type,
-        action: "REJECT_REQUEST",
-      });
-
-      const error = new Error(
-        `余额不足: ${balance} <= ${limits.hard_limit} (硬限额)`,
-      );
+      const error = new Error(errorMsg);
       error.code = "INSUFFICIENT_BALANCE";
       error.context = {
         traceId,
         virtual_key,
-        balance,
-        hard_limit: limits.hard_limit,
-        account_type: context.account.account_type,
+        balance: balanceCheckResult.balance,
+        reason: balanceCheckResult.reason,
+        limit_type: balanceCheckResult.limit_type,
+        limit_value: balanceCheckResult.limit_value,
+        account_type: account.account_type,
       };
       throw error;
     }
 
-    // 检查软限额（告警但不拒绝）
-    if (balance <= limits.soft_limit) {
-      logger.warn("[BALANCE_CHECK] ⚠️ 余额低于软限额，告警", {
-        traceId,
-        virtual_key,
-        balance: balance.toFixed(4),
-        soft_limit: limits.soft_limit,
-        deficit: (limits.soft_limit - balance).toFixed(4),
-        account_type: context.account.account_type,
-        action: "SEND_ALERT_ONLY",
-      });
-    } else {
-      logger.debug("[BALANCE_CHECK] ✅ 余额正常", {
-        traceId,
-        virtual_key,
-        balance: balance.toFixed(4),
-        safe_margin: diffToSoft,
-        status: "OK",
-      });
-    }
-
-    return context;
-  } catch (error) {
-    logger.error("[BALANCE_CHECK] ❌ 余额检查失败", {
+    // 6. 检查通过，记录日志
+    logger.debug("[BALANCE_CHECK] ✅ 余额检查通过", {
       traceId,
       virtual_key,
-      error: error.message,
-      error_code: error.code,
-      failure_point:
-        error.code === "INSUFFICIENT_BALANCE" ? "HARD_LIMIT_CHECK" : "OTHER",
+      balance: balanceCheckResult.balance?.toFixed(4),
+      account_type: account.account_type,
+      status: "OK",
     });
-    // ✅ 在原始错误上添加更多上下文
-    error.message = `预算检查失败 [${virtual_key}]: ${error.message}`;
-    throw error;
+
+    // 7. 返回计费上下文，用于后续扣费
+    return billingContext;
+  } catch (error) {
+    // 错误处理...
+    if (error.code === "INSUFFICIENT_BALANCE") {
+      throw error;
+    }
+
+    const wrappedError = new Error(`预算检查失败: ${error.message}`);
+    wrappedError.originalError = error;
+    throw wrappedError;
   }
 }
 
@@ -407,7 +344,7 @@ async function chargeForUsageAfterRequest(
   try {
     logger.debug("开始扣费", { virtual_key, provider, model, usage });
 
-    const result = await BalanceService.chargeForUsage(
+    const result = await balanceService.chargeForUsage(
       virtual_key,
       provider,
       model,
@@ -447,14 +384,73 @@ async function chargeForUsageAfterRequest(
   }
 }
 
-async function checkRateLimits(rateLimits, userContext, requestBody, path) {
-  // 实现限流逻辑...
-  // logger.debug("限流检查", {
-  //   virtual_key: userContext.virtual_key,
-  //   path,
-  //   rateLimits
-  // });
-  // throw new Error("频率超限"); // 测试用
+async function checkRateLimits(userContext, requestBody, path, traceId) {
+  const { virtual_key } = userContext;
+
+  logger.debug("[RATE_LIMIT_CHECK] 开始限流检查", {
+    traceId,
+    virtual_key,
+    path,
+  });
+
+  try {
+    // 1. 获取账户信息确定身份
+    const billingContext = await balanceService.getBillingContext(virtual_key);
+    const account = billingContext.account;
+
+    // 2. 构建用户信息
+    const user = {
+      tenant_id: account.account_type === "tenant" ? account.account_id : null,
+      customer_type: account.customer_type_id,
+      id: account.account_type === "user" ? account.account_id : null,
+    };
+
+    // 3. 提取provider和model
+    const provider = requestBody.provider || "openai";
+    const model = requestBody.model;
+
+    // 4. 检查TPM（GatewayControlService的职责）
+    const tpmResult = await GatewayControlService.checkTPM(
+      user,
+      provider,
+      model,
+      100, // 预估tokens
+    );
+
+    if (!tpmResult.allowed) {
+      const error = new Error(
+        `TPM限制超出: ${tpmResult.current}/${tpmResult.limit}`,
+      );
+      error.code = "RATE_LIMIT_EXCEEDED";
+      throw error;
+    }
+
+    // 5. 检查RPM
+    const rpmResult = await GatewayControlService.checkRPM(user, provider, 1);
+
+    if (!rpmResult.allowed) {
+      const error = new Error(
+        `RPM限制超出: ${rpmResult.current}/${rpmResult.limit}`,
+      );
+      error.code = "RATE_LIMIT_EXCEEDED";
+      throw error;
+    }
+
+    logger.debug("[RATE_LIMIT_CHECK] ✅ 限流检查通过", {
+      traceId,
+      virtual_key,
+    });
+  } catch (error) {
+    if (error.code === "RATE_LIMIT_EXCEEDED") {
+      throw error;
+    }
+    // 其他错误记录但允许继续
+    logger.error("[RATE_LIMIT_CHECK] 检查出错", {
+      traceId,
+      virtual_key,
+      error: error.message,
+    });
+  }
 }
 
 async function callPortkeyGateway(
@@ -593,15 +589,6 @@ function getFallbackConfig(userContext, requestBody) {
         },
       },
     ],
-    // metadata: {
-    //   _neuropia: {
-    //     sync_controls: {
-    //       budget: { balance: 0 },
-    //       model_access: { allowed_models: [] },
-    //       rate_limits: { max_concurrent: 1 },
-    //     },
-    //   },
-    // },
   };
 }
 

@@ -63,6 +63,82 @@ class BalanceService {
     logger.info("balanceService初始化完成");
   }
 
+  /**
+   * 通过用户信息获取实时余额
+   *
+   * 使用场景：
+   * 1. GatewayControlService.checkBalance() - 余额检查
+   * 2. 网关控制逻辑中需要根据用户信息快速获取余额
+   *
+   * @param {Object} user - 用户信息 { tenant_id, id, customer_type }
+   * @returns {Promise<number>} 实时余额
+   */
+  async getBalanceForUser(user) {
+    if (!user) {
+      throw new Error("用户信息不能为空");
+    }
+
+    if (user.tenant_id) {
+      return await this.getBalanceForAccount(user.tenant_id, "tenant");
+    } else if (user.id) {
+      return await this.getBalanceForAccount(user.id, "user");
+    }
+
+    throw new Error("无法确定用户类型，需要 tenant_id 或 id");
+  }
+
+  /**
+   * 通过账户标识获取实时余额
+   *
+   * 使用场景：
+   * 1. **内部服务间调用** - 已知账户ID和类型时直接获取余额
+   *    例如：用户服务需要查询某个租户的余额
+   *
+   * 2. **缓存回填逻辑** - _ensureBalanceCache中调用，确保余额数据存在
+   *
+   * 3. **管理工具** - 运维人员直接通过账户ID查询余额
+   *
+   *
+   * @param {string} accountOwnerId - 账户业务ID（user_id 或 tenant_id）
+   * @param {string} accountType - 账户类型 'user' 或 'tenant'
+   * @returns {Promise<number>} 实时余额
+   */
+  async getBalanceForAccount(accountOwnerId, accountType) {
+    const key = CACHE_KEYS.BALANCE(accountType, accountOwnerId);
+    const cached = await RedisService.kv.get(key);
+
+    if (!cached) {
+      const balanceData = await this._ensureBalanceCache(
+        accountOwnerId,
+        accountType,
+      );
+      return balanceData.balance;
+    }
+
+    const balanceData = JSON.parse(cached);
+    return balanceData.balance;
+  }
+
+  /**
+   * 通过虚拟密钥获取实时余额
+   *
+   * 使用场景：
+   * 1. 管理后台展示 - 通过virtual_key查询用户余额
+   * 2. API查询接口 - 客户端查询自身余额
+   * 3. 对账系统 - 核对virtual_key对应的余额
+   * 4. 监控告警 - 检查特定密钥余额是否过低
+   *
+   * @param {string} virtualKey - 虚拟密钥
+   * @returns {Promise<number>} 实时余额
+   */
+  async getBalance(virtualKey) {
+    const account = await this._getAccountInfo(virtualKey);
+    return await this.getBalanceForAccount(
+      account.account_owner_id,
+      account.type,
+    );
+  }
+
   // ------------------------------
   // 处理账户余额变动（异步通知，需要catch）
   // ------------------------------
@@ -173,8 +249,8 @@ class BalanceService {
         account_owner_id: account.account_owner_id,
         type: account.type,
         customer_type_id: accountCtId,
-        balance: account.balance,
-        overdue_amount: account.overdue_amount,
+        // balance: account.balance,
+        // overdue_amount: account.overdue_amount,
       },
       pricing: {
         customer_type_id: pricingCtId,
@@ -241,8 +317,8 @@ class BalanceService {
       account_owner_id: accountData.account_id, // ✅ user_id or tenant_id
       type: accountData.account_type,
       customer_type_id: accountData.customer_type_id,
-      balance: accountData.balance,
-      overdue_amount: accountData.overdue_amount,
+      // balance: accountData.balance,
+      // overdue_amount: accountData.overdue_amount,
     };
 
     await RedisService.kv.setex(
@@ -368,7 +444,7 @@ class BalanceService {
           total_tokens: totalTokens,
           balance_before: chargeResult.balance_before, // 扣费前的余额
           balance_after: chargeResult.new_balance, // 扣费后的余额
-          trace_id: traceId
+          trace_id: traceId,
         }).catch((err) => {
           // Stream失败只记录，不影响主流程
           logger.error("Stream写入失败（不影响扣费）", {

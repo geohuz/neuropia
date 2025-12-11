@@ -1,88 +1,210 @@
-// test-gateway-fix.js
+// test/config-flow-correct.js
 require("module-alias/register");
-const gatewayControlService = require("./services/gatewayControlService");
+const pool = require("@shared/clients/pg");
 
-async function testFix() {
-  console.log("=== 测试网关控制服务修复 ===\n");
+async function testConfigFlow() {
+  console.log("=== 配置下发流程测试（完整版） ===\n");
 
-  // 测试1：租户限额
-  console.log("1. 测试租户限额查询:");
-  const tenantLimits = await gatewayControlService.getLimits({
-    account_type: "tenant",
-    account_id: "9d865a1b-2c8b-444e-9172-39e2c3517292",
-    customer_type_id: null,
-  });
-  console.log("租户限额:", tenantLimits);
-  console.log("预期: { soft_limit: 5000, hard_limit: 1000 }");
-  console.log(
-    "结果:",
-    tenantLimits.soft_limit === 5000 && tenantLimits.hard_limit === 1000
-      ? "✅ 通过"
-      : "❌ 失败",
+  const tenantId = "9d865a1b-2c8b-444e-9172-39e2c3517292";
+  const customerTypeId = "eb948fd1-b8da-46c7-aa51-92eb296970c8";
+
+  // 1. 清空配置
+  console.log("1. 清空现有配置...");
+  await pool.query("DELETE FROM data.gateway_control_config");
+  console.log("✅ 配置表已清空\n");
+
+  // 2. 插入完整的三层配置体系
+  console.log("2. 插入完整的三层配置体系...");
+
+  // 全局配置（个人用户）
+  await pool.query(`
+    INSERT INTO data.gateway_control_config
+    (target_type, control_type, control_value, time_window_seconds, is_active)
+    VALUES
+    ('global', 'tpm', 10000, 60, true),
+    ('global', 'rpm', 60, 60, true),  -- 新增：全局RPM
+    ('global', 'soft_limit', 100, NULL, true),
+    ('global', 'hard_limit', 50, NULL, true)
+  `);
+
+  // 客户类型配置
+  await pool.query(
+    `
+    INSERT INTO data.gateway_control_config
+    (target_type, target_id, control_type, control_value, time_window_seconds, is_active)
+    VALUES
+    ('customer_type', $1, 'tpm', 20000, 60, true),
+    ('customer_type', $1, 'rpm', 120, 60, true),  -- 新增：客户类型RPM
+    ('customer_type', $1, 'soft_limit', 200, NULL, true),
+    ('customer_type', $1, 'hard_limit', 100, NULL, true)
+  `,
+    [customerTypeId],
   );
 
-  // 测试2：客户类型配置（如果有的话）
-  console.log("\n2. 测试客户类型限额查询:");
-  try {
-    const customerTypeLimits = await gatewayControlService.getLimits({
-      account_type: "user",
-      account_id: "test-customer-user",
-      customer_type_id: "eb948fd1-b8da-46c7-aa51-92eb296970c8",
-    });
-    console.log("客户类型限额:", customerTypeLimits);
-    console.log("预期: { soft_limit: 500, hard_limit: 250 }");
-  } catch (error) {
-    console.log("客户类型测试跳过:", error.message);
+  // 租户配置 - 使用批量插入提高效率
+  const tenantConfigs = [
+    // 租户全局配置
+    [tenantId, "tpm", 50000, 60, null, null],
+    [tenantId, "rpm", 1000, 60, null, null], // 租户全局RPM
+    [tenantId, "soft_limit", 500, null, null, null],
+    [tenantId, "hard_limit", 200, null, null, null],
+
+    // 租户+openai配置
+    [tenantId, "tpm", 100000, 60, "openai", null],
+    [tenantId, "rpm", 500, 60, "openai", null], // 租户+openai RPM
+
+    // 租户+openai+模型配置
+    [tenantId, "tpm", 80000, 60, "openai", "gpt-4"],
+  ];
+
+  for (const config of tenantConfigs) {
+    await pool.query(
+      `
+      INSERT INTO data.gateway_control_config
+      (target_type, target_id, control_type, control_value, time_window_seconds, provider_name, model_name, is_active)
+      VALUES ('tenant', $1, $2, $3, $4, $5, $6, true)
+      `,
+      config,
+    );
   }
 
-  // 测试3：全局限额
-  console.log("\n3. 测试全局限额查询:");
-  const globalLimits = await gatewayControlService.getLimits({
-    account_type: "user",
-    account_id: "test-user",
-    customer_type_id: null,
-  });
-  console.log("全局限额:", globalLimits);
-  console.log("预期: { soft_limit: 100, hard_limit: 50 }");
-  console.log(
-    "结果:",
-    globalLimits.soft_limit === 100 && globalLimits.hard_limit === 50
-      ? "✅ 通过"
-      : "❌ 失败",
-  );
+  console.log("✅ 插入配置完成：");
+  console.log("  - 全局: TPM=10000/60s, RPM=60/60s, Soft=100, Hard=50");
+  console.log("  - 客户类型: TPM=20000/60s, RPM=120/60s, Soft=200, Hard=100");
+  console.log("  - 租户:");
+  console.log("    * 全局: TPM=50000/60s, RPM=1000/60s, Soft=500, Hard=200");
+  console.log("    * +openai: TPM=100000/60s, RPM=500/60s");
+  console.log("    * +openai+gpt-4: TPM=80000/60s\n");
 
-  // 测试4：缓存测试（第二次查询应该命中缓存）
-  console.log("\n4. 测试缓存命中:");
-  const cachedLimits = await gatewayControlService.getLimits({
-    account_type: "tenant",
-    account_id: "9d865a1b-2c8b-444e-9172-39e2c3517292",
-    customer_type_id: null,
-  });
-  console.log("缓存查询结果:", cachedLimits);
-  console.log(
-    "应与第一次结果相同:",
-    JSON.stringify(cachedLimits) === JSON.stringify(tenantLimits)
-      ? "✅ 通过"
-      : "❌ 失败",
+  // 3. 生成并验证payload
+  console.log("3. 生成并验证配置payload...");
+  const result = await pool.query(
+    "SELECT jsonb_pretty(data.generate_gateway_config_payload()) as payload",
   );
+  const payload = JSON.parse(result.rows[0].payload);
 
-  // 测试5：缓存键格式
-  console.log("\n5. 验证缓存键格式:");
-  const softKey = gatewayControlService._buildLimitCacheKey(
-    "tenant",
-    "test-tenant",
-    null,
-    "soft_limit",
-  );
-  console.log("Soft Limit Key:", softKey);
+  console.log("配置树结构验证:");
+
+  // 全局配置
+  console.log("- 全局配置:");
   console.log(
-    "是否符合CACHE_KEYS格式:",
-    softKey === "gateway:control:tenant:test-tenant:soft_limit"
-      ? "✅ 通过"
-      : "❌ 失败",
+    `  TPM: ${payload.global?.tpm?.value}/${payload.global?.tpm?.time_window}s`,
   );
+  console.log(
+    `  RPM: ${payload.global?.rpm?.value}/${payload.global?.rpm?.time_window}s`,
+  );
+  console.log(`  软限制: ${payload.global?.soft_limit?.value}`);
+  console.log(`  硬限制: ${payload.global?.hard_limit?.value}`);
+
+  // 客户类型配置
+  console.log(`- 客户类型配置 (${customerTypeId}):`);
+  if (payload.customer_types?.[customerTypeId]) {
+    const ct = payload.customer_types[customerTypeId];
+    console.log(`  TPM: ${ct.tpm?.value}/${ct.tpm?.time_window}s`);
+    console.log(`  RPM: ${ct.rpm?.value}/${ct.rpm?.time_window}s`);
+    console.log(`  软限制: ${ct.soft_limit?.value}`);
+    console.log(`  硬限制: ${ct.hard_limit?.value}`);
+  } else {
+    console.log("  ❌ 客户类型配置缺失");
+  }
+
+  // 租户配置
+  console.log(`- 租户配置 (${tenantId}):`);
+  const tenant = payload.tenants?.[tenantId];
+  if (tenant) {
+    console.log(
+      `  全局TPM: ${tenant.global?.tpm?.value}/${tenant.global?.tpm?.time_window}s`,
+    );
+    console.log(
+      `  全局RPM: ${tenant.global?.rpm?.value}/${tenant.global?.rpm?.time_window}s`,
+    );
+    console.log(`  全局软限制: ${tenant.global?.soft_limit?.value}`);
+    console.log(`  全局硬限制: ${tenant.global?.hard_limit?.value}`);
+
+    if (tenant.providers?.openai) {
+      console.log(
+        `  openai全局TPM: ${tenant.providers.openai.global?.tpm?.value}/${tenant.providers.openai.global?.tpm?.time_window}s`,
+      );
+      console.log(
+        `  openai全局RPM: ${tenant.providers.openai.global?.rpm?.value}/${tenant.providers.openai.global?.rpm?.time_window}s`,
+      );
+      console.log(
+        `  openai+gpt-4 TPM: ${tenant.providers.openai.models?.["gpt-4"]?.tpm?.value}/${tenant.providers.openai.models?.["gpt-4"]?.tpm?.time_window}s`,
+      );
+    }
+  } else {
+    console.log("  ❌ 租户配置缺失");
+  }
+
+  // 4. 验证配置优先级
+  console.log("\n4. 验证配置优先级（模拟查找）:");
+
+  function simulateLookup(
+    tenant = null,
+    customerType = null,
+    provider = null,
+    model = null,
+  ) {
+    let config = { ...payload.global };
+
+    // 客户类型覆盖
+    if (customerType && payload.customer_types?.[customerType]) {
+      Object.assign(config, payload.customer_types[customerType]);
+    }
+
+    // 租户覆盖
+    if (tenant && payload.tenants?.[tenant]) {
+      const tenantConfig = payload.tenants[tenant];
+      Object.assign(config, tenantConfig.global);
+
+      // 供应商覆盖
+      if (provider && tenantConfig.providers?.[provider]) {
+        const providerConfig = tenantConfig.providers[provider];
+        Object.assign(config, providerConfig.global);
+
+        // 模型覆盖（只对TPM有效）
+        if (model && providerConfig.models?.[model]) {
+          Object.assign(config, providerConfig.models[model]);
+        }
+      }
+    }
+
+    return config;
+  }
+
+  console.log("场景1: 个人用户（全局）");
+  const config1 = simulateLookup();
+  console.log(`  TPM: ${config1.tpm?.value} (预期: 10000)`);
+  console.log(`  RPM: ${config1.rpm?.value} (预期: 60)`);
+
+  console.log("\n场景2: 客户类型用户");
+  const config2 = simulateLookup(null, customerTypeId);
+  console.log(`  TPM: ${config2.tpm?.value} (预期: 20000)`);
+  console.log(`  RPM: ${config2.rpm?.value} (预期: 120)`);
+
+  console.log("\n场景3: 租户用户（openai的gpt-4）");
+  const config3 = simulateLookup(tenantId, null, "openai", "gpt-4");
+  console.log(`  TPM: ${config3.tpm?.value} (预期: 80000)`);
+  console.log(`  RPM: ${config3.rpm?.value} (预期: 500)`);
+  console.log(`  软限制: ${config3.soft_limit?.value} (预期: 500)`);
+  console.log(`  硬限制: ${config3.hard_limit?.value} (预期: 200)`);
+
+  console.log("\n场景4: 租户用户（仅openai，无模型）");
+  const config4 = simulateLookup(tenantId, null, "openai", null);
+  console.log(`  TPM: ${config4.tpm?.value} (预期: 100000)`);
+  console.log(`  RPM: ${config4.rpm?.value} (预期: 500)`);
+
+  console.log("\n场景5: 租户用户（无供应商）");
+  const config5 = simulateLookup(tenantId, null, null, null);
+  console.log(`  TPM: ${config5.tpm?.value} (预期: 50000)`);
+  console.log(`  RPM: ${config5.rpm?.value} (预期: 1000)`);
 
   console.log("\n=== 测试完成 ===");
+  console.log("检查PostgreSQL日志确认触发器工作，NOTICE应输出配置payload。");
+  console.log("然后运行 gateway-config-check.js 验证Gateway是否正确加载配置。");
 }
 
-testFix().catch(console.error);
+testConfigFlow().catch((err) => {
+  console.error("测试失败:", err);
+  process.exit(1);
+});
