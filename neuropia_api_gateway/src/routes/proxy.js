@@ -379,12 +379,6 @@ async function chargeForUsageAfterRequest(
 async function checkRateLimits(userContext, requestBody, path, traceId) {
   const { virtual_key } = userContext;
 
-  logger.debug("[RATE_LIMIT_CHECK] 开始限流检查", {
-    traceId,
-    virtual_key,
-    path,
-  });
-
   try {
     // 1. 获取账户信息确定身份
     const billingContext = await balanceService.getBillingContext(virtual_key);
