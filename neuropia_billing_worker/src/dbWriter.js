@@ -244,6 +244,7 @@ function validateAndFilterMessages(messages) {
         balance_after:
           msg.balance_after !== undefined ? msg.balance_after : null,
         trace_id: msg.trace_id || null,
+        user_id: msg.user_id || null,
       };
 
       validMessages.push(validatedMsg);

@@ -97,3 +97,30 @@ done
 2. ✅ **TPM限流**：租户+openai+gpt-4的TPM应为80000 tokens/60s
 3. ✅ **RPM限流**：租户+openai的RPM应为1000 requests/60s
 4. ✅ **配置优先级**：模型级别配置应覆盖供应商和租户全局
+
+# 租户用户
+
+```
+curl -X POST http://localhost:3001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer vk_52984a893baa36c94c07b4b121461058" \
+  -d '{
+    "model": "qwen-turbo",
+    "provider": "dashscope",
+    "messages": [{"role": "user", "content": "Test"}]
+  }'
+```
+
+# 普通用户
+
+```
+curl -X POST http://localhost:3001/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer vk_908782e38b24598fb24da818eea36ef2" \
+  -d '{
+    "model": "qwen-turbo",
+    "provider": "dashscope",
+    "messages": [{"role": "user", "content": "Test"}]
+  }'
+```
+

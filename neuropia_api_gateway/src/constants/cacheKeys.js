@@ -1,5 +1,6 @@
 // constants/cacheKeys.js
 const crypto = require("crypto");
+const RedisService = require("@shared/clients/redis_op");
 
 const CACHE_KEYS = {
   // 虚拟 key 的最终配置

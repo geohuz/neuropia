@@ -97,6 +97,7 @@ router.all("/*", async (req, res) => {
       logger.warn("业务规则验证失败", {
         traceId,
         virtual_key,
+        user_id: validationError.context.user_id,
         error: validationError.message,
       });
       throw validationError; // 继续向上抛，让上层处理HTTP响应
@@ -147,7 +148,6 @@ router.all("/*", async (req, res) => {
         traceId,
         error: error.message,
         code: "MODEL_NOT_ALLOWED",
-        trace_id: traceId,
       });
     }
 
@@ -160,7 +160,6 @@ router.all("/*", async (req, res) => {
         traceId,
         error: error.message,
         code: "INSUFFICIENT_BALANCE",
-        trace_id: traceId,
       });
     }
 
@@ -172,7 +171,6 @@ router.all("/*", async (req, res) => {
         traceId,
         error: error.message,
         code: "RATE_LIMIT_EXCEEDED",
-        trace_id: traceId,
       });
     }
 
@@ -180,7 +178,7 @@ router.all("/*", async (req, res) => {
       return res.status(500).json({
         error: "计费系统错误",
         code: "BILLING_FAILED",
-        trace_id: traceId,
+        traceId: traceId,
       });
     }
 
@@ -188,7 +186,7 @@ router.all("/*", async (req, res) => {
     res.status(500).json({
       error: "内部服务器错误",
       code: "INTERNAL_ERROR",
-      trace_id: traceId,
+      traceId: traceId,
       // 生产环境不返回详情，开发环境可以
       details:
         process.env.NODE_ENV === "production" ? undefined : error.message,
@@ -223,7 +221,6 @@ async function validateBusinessRules(userContext, requestBody, path, traceId) {
   // 2. 预算检查
   try {
     const billingContext = await checkBudget(
-      {},
       userContext,
       requestBody,
       path,
@@ -232,6 +229,7 @@ async function validateBusinessRules(userContext, requestBody, path, traceId) {
     userContext.billingContext = billingContext;
   } catch (budgetError) {
     // 预算检查失败，直接抛出
+    budgetError.user_id = budgetError.context.user_id;
     throw budgetError;
   }
 
@@ -244,13 +242,7 @@ async function validateBusinessRules(userContext, requestBody, path, traceId) {
   }
 }
 
-async function checkBudget(
-  budgetConfig,
-  userContext,
-  requestBody,
-  path,
-  traceId,
-) {
+async function checkBudget(userContext, requestBody, path, traceId) {
   const { virtual_key } = userContext;
 
   try {
@@ -283,6 +275,7 @@ async function checkBudget(
       error.code = "INSUFFICIENT_BALANCE";
       error.context = {
         traceId,
+        user_id: account.operating_user_id,
         virtual_key,
         balance: balanceCheckResult.balance,
         reason: balanceCheckResult.reason,
@@ -360,7 +353,7 @@ async function chargeForUsageAfterRequest(
   } catch (error) {
     // ✅ 扣费失败是一个严重错误，需要记录并抛出
     logger.error("扣费失败", {
-      trace_id: traceId,
+      traceId: traceId,
       virtual_key,
       provider,
       model,
@@ -521,7 +514,7 @@ async function callPortkeyGateway(
           created: result.created,
           model: result.model,
           id: result.id,
-          trace_id: traceId,
+          traceId: traceId,
         };
         // result.billing = {
         //   charged: {
@@ -534,7 +527,7 @@ async function callPortkeyGateway(
     } catch (billingError) {
       // 扣费失败，记录但不中断响应（可根据业务需求调整）
       logger.error("扣费失败但不中断响应", {
-        trace_id: traceId,
+        traceId: traceId,
         virtual_key: virtual_key,
         error: billingError.message,
       });

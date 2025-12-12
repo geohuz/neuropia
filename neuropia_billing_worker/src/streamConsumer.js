@@ -356,6 +356,7 @@ async function processMessageBatch(messages, config) {
         user_id = msg.account_owner_id;
       } else if (msg.account_type === "tenant" && msg.account_owner_id) {
         tenant_id = msg.account_owner_id;
+        user_id = msg.user_id;
       }
 
       return {

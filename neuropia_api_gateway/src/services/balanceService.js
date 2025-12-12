@@ -248,9 +248,14 @@ class BalanceService {
         id: account.id, // 技术ID (account_balance.id)
         account_owner_id: account.account_owner_id,
         type: account.type,
+        operating_user_id: account.operating_user_id,
         customer_type_id: accountCtId,
         // balance: account.balance,
         // overdue_amount: account.overdue_amount,
+        // ⚠️ 重要说明：这里不缓存余额！
+        // 原因：余额变动频繁，需要单独缓存（见CACHE_KEYS.BALANCE）
+        // 余额通过handleBalanceChange()实时更新
+        // ❌ 不要在这里加balance字段
       },
       pricing: {
         customer_type_id: pricingCtId,
@@ -316,6 +321,7 @@ class BalanceService {
       id: accountData.account_balance_id, // ✅ account_balacne.id
       account_owner_id: accountData.account_id, // ✅ user_id or tenant_id
       type: accountData.account_type,
+      operating_user_id: accountData.user_id, // 实际消费用户(特别是tenant下的用户)
       customer_type_id: accountData.customer_type_id,
       // balance: accountData.balance,
       // overdue_amount: accountData.overdue_amount,
@@ -408,6 +414,7 @@ class BalanceService {
         logger.info("扣费成功", {
           traceId,
           virtualKey,
+          user_id: context.account.operating_user_id,
           account: `${context.account.type}:${context.account.id}`,
           cost,
           balance_before: chargeResult.balance_before, // 🆕 添加
@@ -426,6 +433,7 @@ class BalanceService {
         this._writeToStreamInBackground({
           account_id: context.account.id,
           account_owner_id: context.account.account_owner_id, // ✅ 业务ID（便于追溯）
+          user_id: context.account.operating_user_id,
           account_type: context.account.type,
           virtual_key: virtualKey,
           cost: cost,
@@ -453,12 +461,13 @@ class BalanceService {
       // ✅ 边界处记录完整错误信息
       logger.error("扣费失败", {
         virtualKey,
+        user_id: context.account.operating_user_id,
         provider,
         model,
         traceId,
         error: error.message,
-        stack: error.stack, // ✅ 关键：保留堆栈
-        context: error.context, // ✅ 如果有额外上下文
+        stack: error.stack,
+        context: error.context,
       });
 
       // 重新抛出，让上层（API层）处理
@@ -700,3 +709,18 @@ class BalanceService {
 
 const balanceService = new BalanceService();
 module.exports = balanceService;
+
+/*
+虚拟密钥 vk_xxx
+       ↓
+_getAccountInfo() 缓存身份
+       ├── 账户ID: xxx
+       ├── 账户类型: user/tenant
+       ├── customer_type: xxx
+       └── operating_user_id: xxx
+
+       ↓ 使用account_owner_id查询
+
+_ensureBalanceCache() 缓存余额
+       └── balance: 100.50
+*/
