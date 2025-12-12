@@ -124,3 +124,42 @@ curl -X POST http://localhost:3001/v1/chat/completions \
   }'
 ```
 
+## 业务层流程
+
+## 注册用户
+
+```
+/*
+api.register_user(
+	p_email text,
+	p_username text,
+	p_password text,
+	p_role text DEFAULT 'norm_user'::text,
+	p_tenant_id uuid DEFAULT NULL::uuid)
+)
+
+* p_role 可以是 norm_user/tenant_admin
+* p_role 如果是tenant_admin必须有tenant_id
+* p_role 如果是norm_user, 可选tenant_id(某租户下用户)
+* 注册tenant用户必须先插入tenant信息
+
+
+1. 插入 auth.login（只保存认证信息）
+2. 插入 data.user_profile（保存额外信息，包括 tenant_id）
+3. 调用 internal.complete_user_registration
+    1. 更新 user_profile.status -> pending
+    2. 记录状态变更日志: user_status_log -> (null -> pending)
+*/
+
+```
+
+```postgresql
+INSERT INTO DATA.tenant (NAME, customer_type_id) VALUES ('tesla', 'eb948fd1-b8da-46c7-aa51-92eb296970c8') RETURNING id; -- b3863a67-b9fa-436e-b618-d0c452c9c08c
+
+SELECT api.register_user('tesla_user1@tesla.com', 'tesla_user1', '123', 'norm_user', 'b3863a67-b9fa-436e-b618-d0c452c9c08c'); -- 54020d6c-8741-4d90-b484-1702a6cacf10
+
+SELECT api.create_virtual_key('54020d6c-8741-4d90-b484-1702a6cacf10', 'testp'); 
+-- vk_6ccfc552981c961f8a018beba0681c1a
+
+```
+
