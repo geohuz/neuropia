@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict tX0NaLiRbU6GuqnThOtu7Lfu5GyPQRmlNFD7kDOLmfNdCPqMzvUuxWpjqc7TBh6
+\restrict ZGTOiWAc03obFWicyYqSlvp4bVKK6xp7ZEZiMuWy1sWdgcyKfClvNYmeGxFQhUW
 
 -- Dumped from database version 18.1 (Homebrew)
 -- Dumped by pg_dump version 18.1 (Homebrew)
@@ -36,6 +36,13 @@ CREATE SCHEMA auth;
 
 
 ALTER SCHEMA auth OWNER TO geohuz;
+
+--
+-- Name: pg_cron; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pg_cron WITH SCHEMA pg_catalog;
+
 
 --
 -- Name: data; Type: SCHEMA; Schema: -; Owner: geohuz
@@ -274,11 +281,52 @@ ALTER FUNCTION api.admin_set_balance(p_account_id uuid, p_account_type text, p_n
 CREATE FUNCTION api.attach_virtualkey(p_virtual_key_id uuid, p_config_node_id uuid) RETURNS void
     LANGUAGE plpgsql
     AS $$
+DECLARE
+    node_computed_config jsonb;
+    vk_config_data jsonb;
+    current_computed_config jsonb;
+    new_computed_config jsonb;
 BEGIN
-    -- 只更新 primary_config_node_id，触发器自动处理 computed_config 和通知
-    UPDATE data.virtual_key
-    SET primary_config_node_id = p_config_node_id
+    -- 获取当前virtual_key的config_data和computed_config
+    SELECT config_data, computed_config 
+    INTO vk_config_data, current_computed_config
+    FROM data.virtual_key 
     WHERE id = p_virtual_key_id;
+    
+    -- 获取config_node的computed_config
+    SELECT computed_config INTO node_computed_config
+    FROM data.config_nodes
+    WHERE id = p_config_node_id;
+    
+    -- 计算新的computed_config
+    new_computed_config := COALESCE(node_computed_config, '{}'::jsonb) || COALESCE(vk_config_data, '{}'::jsonb);
+    
+    -- 如果新旧computed_config相同，直接返回
+    IF current_computed_config IS NOT DISTINCT FROM new_computed_config 
+       AND EXISTS (
+           SELECT 1 
+           FROM data.virtual_key 
+           WHERE id = p_virtual_key_id 
+             AND primary_config_node_id = p_config_node_id
+       ) THEN
+        RETURN;
+    END IF;
+    
+    -- 更新virtual_key
+    UPDATE data.virtual_key
+    SET 
+        primary_config_node_id = p_config_node_id,
+        computed_config = new_computed_config
+    WHERE id = p_virtual_key_id;
+    
+    -- 更新映射表
+    DELETE FROM data.node_virtual_key_map WHERE virtual_key_id = p_virtual_key_id;
+    
+    INSERT INTO data.node_virtual_key_map(node_id, virtual_key_id)
+    VALUES (p_config_node_id, p_virtual_key_id);
+    
+    -- 发送通知
+    PERFORM pg_notify('virtual_key_config_changed', p_virtual_key_id::text);
 END;
 $$;
 
@@ -1547,52 +1595,28 @@ DECLARE
     vk record;
     final_config jsonb;
 BEGIN
-    -- 查询 virtual_key
-    SELECT *
-    INTO vk
+    SELECT * INTO vk
     FROM data.virtual_key
     WHERE virtual_key = p_virtual_key;
-
-    -- 404: virtual_key 不存在
+    
     IF NOT FOUND THEN
-        RAISE EXCEPTION
-            USING
-                ERRCODE = 'P0001',
-                MESSAGE = 'API key not found',
-                DETAIL  = '',
-                HINT    = 'Verify the api key before calling this API.';
+        RAISE EXCEPTION 'API key not found' USING ERRCODE = 'P0001';
     END IF;
-
-    -- 400: virtual_key 未激活
+    
     IF vk.is_active = false THEN
-        RAISE EXCEPTION
-            USING
-                ERRCODE = 'P0001',
-                MESSAGE = 'API key is not active',
-                DETAIL  = '',
-                HINT    = 'Reactivate the api key to use this API.';
+        RAISE EXCEPTION 'API key is not active' USING ERRCODE = 'P0001';
     END IF;
-
-    -- 计算最终 config
-    final_config := data.refresh_virtual_key_computed_config(vk.id);
-
-    -- 400: computed_config 是空对象 {}
+    
+    -- 直接计算最新配置
+    final_config := data.compute_virtual_key_config(vk.id);
+    
     IF final_config = '{}'::jsonb THEN
-        RAISE EXCEPTION
-            USING
-                ERRCODE = 'P0001',
-                MESSAGE = 'Configuration not found',
-                DETAIL  = '',
-                HINT    = '该 API Key 未配置, 请联系支持。';
+        RAISE EXCEPTION 'Configuration not found' USING ERRCODE = 'P0001';
     END IF;
-
-    -- 写回虚拟 key 表
-    UPDATE data.virtual_key
-    SET
-        computed_config = final_config,
-        updated_at = now()
-    WHERE id = vk.id;
-
+    
+    -- 可选：更新缓存字段（异步或同步）
+    -- UPDATE data.virtual_key SET computed_config = final_config WHERE id = vk.id;
+    
     RETURN final_config;
 END;
 $$;
@@ -3725,6 +3749,204 @@ $$;
 ALTER FUNCTION data.compute_user_config() OWNER TO geohuz;
 
 --
+-- Name: compute_virtual_key_config(uuid); Type: FUNCTION; Schema: data; Owner: geohuz
+--
+
+CREATE FUNCTION data.compute_virtual_key_config(vk_id uuid) RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    vk_record data.virtual_key%ROWTYPE;
+    node_config jsonb;
+BEGIN
+    SELECT * INTO vk_record FROM data.virtual_key WHERE id = vk_id;
+    
+    IF vk_record.primary_config_node_id IS NOT NULL THEN
+        SELECT computed_config INTO node_config 
+        FROM data.config_nodes 
+        WHERE id = vk_record.primary_config_node_id;
+    ELSE
+        node_config := '{}'::jsonb;
+    END IF;
+    
+    RETURN data.jsonb_deep_merge(node_config, vk_record.config_data);
+END;
+$$;
+
+
+ALTER FUNCTION data.compute_virtual_key_config(vk_id uuid) OWNER TO geohuz;
+
+--
+-- Name: generate_gateway_config_payload(); Type: FUNCTION; Schema: data; Owner: geohuz
+--
+
+CREATE FUNCTION data.generate_gateway_config_payload() RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    result JSONB := '{}'::JSONB;
+    rec RECORD;
+    
+    global_config JSONB := '{}'::JSONB;
+    customer_type_configs JSONB := '{}'::JSONB;
+    tenant_configs JSONB := '{}'::JSONB;
+    
+    t_id UUID;
+    p_name TEXT;
+    m_name TEXT;
+    c_type TEXT;
+    c_value NUMERIC;
+    t_window INTEGER;
+    
+    current_provider JSONB;
+    current_models JSONB;
+BEGIN
+    FOR rec IN 
+        SELECT 
+            gcs.*,
+            CASE 
+                WHEN target_type = 'tenant' 
+                     AND provider_name IS NOT NULL 
+                     AND model_name IS NOT NULL THEN 1000
+                WHEN target_type = 'tenant' 
+                     AND provider_name IS NOT NULL 
+                     AND model_name IS NULL THEN 900
+                WHEN target_type = 'tenant' 
+                     AND provider_name IS NULL 
+                     AND model_name IS NULL THEN 800
+                WHEN target_type = 'customer_type' THEN 700
+                WHEN target_type = 'global' THEN 100
+                ELSE 0
+            END as priority
+        FROM data.gateway_control_config gcs
+        WHERE gcs.is_active = true
+        ORDER BY priority DESC, created_at DESC
+    LOOP
+        CASE rec.target_type
+            WHEN 'global' THEN
+                global_config := global_config || jsonb_build_object(
+                    rec.control_type, jsonb_build_object(
+                        'value', rec.control_value,
+                        'time_window', rec.time_window_seconds
+                    )
+                );
+                
+            WHEN 'customer_type' THEN
+                customer_type_configs := customer_type_configs || 
+                    jsonb_build_object(
+                        rec.target_id::text,
+                        COALESCE(customer_type_configs -> rec.target_id::text, '{}'::JSONB) ||
+                        jsonb_build_object(
+                            rec.control_type,
+                            jsonb_build_object(
+                                'value', rec.control_value,
+                                'time_window', rec.time_window_seconds
+                            )
+                        )
+                    );
+                
+            WHEN 'tenant' THEN
+                -- 赋值给局部变量
+                t_id := rec.target_id;
+                p_name := rec.provider_name;
+                m_name := rec.model_name;
+                c_type := rec.control_type;
+                c_value := rec.control_value;
+                t_window := rec.time_window_seconds;
+                
+                -- 初始化租户结构
+                IF NOT tenant_configs ? t_id::text THEN
+                    tenant_configs := tenant_configs || jsonb_build_object(
+                        t_id::text, jsonb_build_object(
+                            'global', '{}'::JSONB,
+                            'providers', '{}'::JSONB
+                        )
+                    );
+                END IF;
+                
+                -- 模型级别配置 (provider和model都不为NULL)
+                IF p_name IS NOT NULL AND m_name IS NOT NULL AND rec.control_type = 'tpm' THEN
+                    -- 获取当前供应商配置
+                    current_provider := COALESCE(tenant_configs #> ARRAY[t_id::text, 'providers', p_name], '{}'::JSONB);
+                    current_models := COALESCE(current_provider -> 'models', '{}'::JSONB);
+                    
+                    -- 更新模型配置
+                    current_models := current_models || jsonb_build_object(
+                        m_name,
+                        COALESCE(current_models -> m_name, '{}'::JSONB) ||
+                        jsonb_build_object(
+                            c_type,
+                            jsonb_build_object('value', c_value, 'time_window', t_window)
+                        )
+                    );
+                    
+                    -- 更新供应商配置
+                    current_provider := current_provider || jsonb_build_object('models', current_models);
+                    
+                    -- 更新租户配置
+                    tenant_configs := jsonb_set(
+                        tenant_configs,
+                        ARRAY[t_id::text, 'providers', p_name],
+                        current_provider
+                    );
+                    
+                -- 供应商级别配置 (provider不为NULL, model为NULL)
+                ELSIF p_name IS NOT NULL AND m_name IS NULL THEN
+                    -- 获取当前供应商配置
+                    current_provider := COALESCE(tenant_configs #> ARRAY[t_id::text, 'providers', p_name], '{}'::JSONB);
+                    current_models := COALESCE(current_provider -> 'models', '{}'::JSONB);
+                    
+                    -- 更新供应商全局配置
+                    current_provider := current_provider || jsonb_build_object(
+                        'global',
+                        COALESCE(current_provider -> 'global', '{}'::JSONB) ||
+                        jsonb_build_object(
+                            c_type,
+                            jsonb_build_object('value', c_value, 'time_window', t_window)
+                        )
+                    ) || jsonb_build_object('models', current_models);
+                    
+                    -- 更新租户配置
+                    tenant_configs := jsonb_set(
+                        tenant_configs,
+                        ARRAY[t_id::text, 'providers', p_name],
+                        current_provider
+                    );
+                    
+                -- 租户全局配置 (provider为NULL)
+                ELSE
+                    -- 更新租户全局配置
+                    tenant_configs := jsonb_set(
+                        tenant_configs,
+                        ARRAY[t_id::text, 'global'],
+                        COALESCE(tenant_configs #> ARRAY[t_id::text, 'global'], '{}'::JSONB) ||
+                        jsonb_build_object(
+                            c_type,
+                            jsonb_build_object('value', c_value, 'time_window', t_window)
+                        )
+                    );
+                END IF;
+        END CASE;
+    END LOOP;
+    
+    result := jsonb_build_object(
+        'global', global_config,
+        'customer_types', customer_type_configs,
+        'tenants', tenant_configs,
+        'metadata', jsonb_build_object(
+            'generated_at', NOW(),
+            'config_count', (SELECT COUNT(*) FROM data.gateway_control_config WHERE is_active = true)
+        )
+    );
+    
+    RETURN result;
+END;
+$$;
+
+
+ALTER FUNCTION data.generate_gateway_config_payload() OWNER TO geohuz;
+
+--
 -- Name: jsonb_deep_merge(jsonb, jsonb); Type: FUNCTION; Schema: data; Owner: geohuz
 --
 
@@ -3892,18 +4114,11 @@ CREATE FUNCTION data.notify_gateway_control_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    payload_json jsonb;
-    record_data jsonb;
+    payload jsonb;
 BEGIN
-    payload_json := jsonb_build_object(
-        'operation', CASE WHEN TG_OP = 'DELETE' THEN 'delete' ELSE 'update' END,
-        'record', CASE 
-            WHEN TG_OP = 'DELETE' THEN to_jsonb(OLD)
-            ELSE to_jsonb(NEW)
-        END
-    );
-    
-    PERFORM pg_notify('gateway_control_changes', payload_json::text);
+	payload := data.generate_gateway_config_payload();
+    -- RAISE NOTICE '%', jsonb_pretty(payload);
+    PERFORM pg_notify('gateway_control_changes', payload::text);
     RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
 END;
 $$;
@@ -3926,17 +4141,6 @@ $$;
 
 
 ALTER FUNCTION data.notify_node_change() OWNER TO geohuz;
-
---
--- Name: notify_node_changed(); Type: FUNCTION; Schema: data; Owner: geohuz
---
-
-CREATE FUNCTION data.notify_node_changed() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$ DECLARE vk_ids text[]; BEGIN SELECT array_agg(id) INTO vk_ids FROM data.virtual_key WHERE primary_config_node_id = NEW.id; PERFORM pg_notify( 'node_changed', json_build_object( 'node_id', NEW.id, 'virtual_key_ids', COALESCE(vk_ids, ARRAY[]::text[]) )::text ); RETURN NEW; END; $$;
-
-
-ALTER FUNCTION data.notify_node_changed() OWNER TO geohuz;
 
 --
 -- Name: notify_payment_job_created(); Type: FUNCTION; Schema: data; Owner: geohuz
@@ -3982,9 +4186,36 @@ ALTER FUNCTION data.notify_payment_job_updated() OWNER TO geohuz;
 CREATE FUNCTION data.on_node_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
+DECLARE
+    affected_vks uuid[];
 BEGIN
-    -- ⚡ 注意这里用 PERFORM，而不是 SELECT
     PERFORM data.refresh_node_and_descendants(NEW.id);
+    
+    -- 修正递归方向：找所有后代节点
+    SELECT array_agg(DISTINCT vk.id)
+    INTO affected_vks
+    FROM data.virtual_key vk
+    WHERE vk.primary_config_node_id IN (
+        WITH RECURSIVE node_tree AS (
+            SELECT id FROM data.config_nodes WHERE id = NEW.id
+            UNION ALL
+            SELECT cn.id 
+            FROM data.config_nodes cn
+            JOIN node_tree nt ON cn.parent_id = nt.id  -- 这是对的
+        )
+        SELECT id FROM node_tree
+    );
+    
+    IF affected_vks IS NOT NULL AND array_length(affected_vks, 1) > 0 THEN
+        PERFORM pg_notify(
+            'node_changed',  -- 统一用这个channel名
+            jsonb_build_object(
+                'node_id', NEW.id,
+                'virtual_key_ids', affected_vks
+            )::text
+        );
+    END IF;
+    
     RETURN NEW;
 END;
 $$;
@@ -4085,6 +4316,170 @@ $$;
 ALTER FUNCTION data.prevent_unsupported_tier_references() OWNER TO geohuz;
 
 --
+-- Name: reconcile_balances(character varying, boolean, numeric, numeric); Type: FUNCTION; Schema: data; Owner: geohuz
+--
+
+CREATE FUNCTION data.reconcile_balances(recon_type character varying DEFAULT 'hourly'::character varying, check_all boolean DEFAULT false, error_threshold numeric DEFAULT 1.00, warning_threshold numeric DEFAULT 0.01) RETURNS jsonb
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    start_time TIMESTAMP := NOW();
+    recon_id BIGINT;
+    total_accounts INT := 0;
+    error_count INT := 0;
+    warning_count INT := 0;
+    total_discrepancy NUMERIC := 0;
+    max_discrepancy NUMERIC := 0;
+    errors JSONB := '[]'::JSONB;
+    check_start TIMESTAMP;
+    account_errors JSONB;
+BEGIN
+    -- 确定检查的时间范围
+    check_start := CASE 
+        WHEN recon_type = 'hourly' THEN NOW() - INTERVAL '24 hours'
+        WHEN recon_type = 'daily' THEN NOW() - INTERVAL '7 days'
+        ELSE NOW() - INTERVAL '1 hour'
+    END;
+    
+    -- 创建对账记录
+    INSERT INTO data.balance_reconciliation_log (
+        recon_time,
+        recon_type,
+        status,
+        check_start_time,
+        check_end_time
+    ) VALUES (
+        start_time,
+        recon_type,
+        'running',
+        check_start,
+        NOW()
+    ) RETURNING id INTO recon_id;
+    
+    -- 执行检查并收集结果
+    WITH balance_check AS (
+        SELECT 
+            ab.id as account_id,
+            ab.balance as db_balance,
+            ul.latest_balance,
+            ABS(COALESCE(ab.balance, 0) - COALESCE(ul.latest_balance, 0)) as discrepancy,
+            CASE 
+                WHEN ABS(COALESCE(ab.balance, 0) - COALESCE(ul.latest_balance, 0)) > error_threshold 
+                THEN 'error'
+                WHEN ABS(COALESCE(ab.balance, 0) - COALESCE(ul.latest_balance, 0)) > warning_threshold
+                THEN 'warning'
+                ELSE 'ok'
+            END as severity
+        FROM data.account_balance ab
+        LEFT JOIN (
+            SELECT DISTINCT ON (account_id)
+                account_id,
+                balance_after as latest_balance
+            FROM data.usage_log
+            WHERE sync_status = 'completed'
+              AND balance_after IS NOT NULL
+              AND created_at >= check_start
+            ORDER BY account_id, created_at DESC
+        ) ul ON ab.id = ul.account_id
+        WHERE ab.status = 'active'
+          AND (check_all OR EXISTS (
+              SELECT 1 FROM data.usage_log 
+              WHERE account_id = ab.id 
+                AND created_at >= check_start
+          ))
+    ),
+    check_stats AS (
+        SELECT 
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE severity IN ('error', 'warning')) as error_warning_count,
+            COUNT(*) FILTER (WHERE severity = 'warning') as warning_only_count,
+            COALESCE(SUM(discrepancy), 0) as total_disc,
+            COALESCE(MAX(discrepancy), 0) as max_disc,
+            COALESCE(jsonb_agg(
+                CASE WHEN severity IN ('error', 'warning') THEN
+                    jsonb_build_object(
+                        'account_id', account_id,
+                        'error_type', 'balance_mismatch',
+                        'expected', latest_balance,
+                        'actual', db_balance,
+                        'discrepancy', discrepancy,
+                        'severity', severity
+                    )
+                END
+            ) FILTER (WHERE severity IN ('error', 'warning')), '[]'::jsonb) as error_list
+        FROM balance_check
+    )
+    SELECT 
+        total,
+        error_warning_count,
+        warning_only_count,
+        total_disc,
+        max_disc,
+        error_list
+    INTO 
+        total_accounts,
+        error_count,
+        warning_count,
+        total_discrepancy,
+        max_discrepancy,
+        account_errors
+    FROM check_stats;
+    
+    -- 更新对账记录
+    UPDATE data.balance_reconciliation_log
+    SET 
+        total_accounts_checked = total_accounts,
+        accounts_with_errors = error_count,
+        accounts_with_warnings = warning_count,
+        total_discrepancy_amount = total_discrepancy,
+        max_discrepancy_amount = max_discrepancy,
+        error_details = jsonb_build_object(
+            'errors', account_errors,
+            'summary', jsonb_build_object(
+                'balance_mismatch', error_count,
+                'warning_only', warning_count,
+                'check_start', check_start,
+                'check_end', NOW()
+            )
+        ),
+        status = 'completed',
+        duration_seconds = EXTRACT(EPOCH FROM (NOW() - start_time))
+    WHERE id = recon_id;
+    
+    -- 返回结果
+    RETURN jsonb_build_object(
+        'recon_id', recon_id,
+        'status', 'completed',
+        'accounts_checked', total_accounts,
+        'accounts_with_errors', error_count,
+        'accounts_with_warnings', warning_count,
+        'total_discrepancy', total_discrepancy,
+        'max_discrepancy', max_discrepancy,
+        'duration_seconds', EXTRACT(EPOCH FROM (NOW() - start_time)),
+        'has_errors', error_count > 0
+    );
+    
+EXCEPTION WHEN OTHERS THEN
+    -- 记录失败
+    UPDATE data.balance_reconciliation_log
+    SET 
+        status = 'failed',
+        duration_seconds = EXTRACT(EPOCH FROM (NOW() - start_time)),
+        error_details = jsonb_build_object('error', SQLERRM)
+    WHERE id = recon_id;
+    
+    RETURN jsonb_build_object(
+        'recon_id', recon_id,
+        'status', 'failed',
+        'error', SQLERRM
+    );
+END;
+$$;
+
+
+ALTER FUNCTION data.reconcile_balances(recon_type character varying, check_all boolean, error_threshold numeric, warning_threshold numeric) OWNER TO geohuz;
+
+--
 -- Name: refresh_all_configs(); Type: FUNCTION; Schema: data; Owner: geohuz
 --
 
@@ -4158,54 +4553,68 @@ CREATE FUNCTION data.refresh_node_and_descendants(target_id uuid) RETURNS jsonb
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    r RECORD;
-    result jsonb;  -- 用来储存 target 节点的最终 computed_config
+    node_data jsonb;
+    computed_configs jsonb := '{}'::jsonb;
+    target_config jsonb;
 BEGIN
-    -- 按层级生成节点列表并循环处理
-    FOR r IN
-        WITH RECURSIVE tree AS (
-            SELECT id, parent_id, config_data, 1 AS lvl
-            FROM data.config_nodes
-            WHERE id = target_id
-
-            UNION ALL
-
-            SELECT c.id, c.parent_id, c.config_data, t.lvl + 1
-            FROM data.config_nodes c
-            JOIN tree t ON c.parent_id = t.id
-        )
-        SELECT id, parent_id, config_data, lvl
-        FROM tree
-        ORDER BY lvl
-    LOOP
-        IF r.parent_id IS NULL THEN
-            -- root 节点
-            UPDATE data.config_nodes
-            SET computed_config = r.config_data
-            WHERE id = r.id;
-
-            IF r.id = target_id THEN
-                result := r.config_data;
+    -- 一次性获取所有节点，按层级排序
+    WITH RECURSIVE node_tree AS (
+        SELECT id, parent_id, config_data, 1 as level
+        FROM data.config_nodes WHERE id = target_id AND is_active = true
+        UNION ALL
+        SELECT cn.id, cn.parent_id, cn.config_data, nt.level + 1
+        FROM data.config_nodes cn
+        JOIN node_tree nt ON cn.parent_id = nt.id
+        WHERE cn.is_active = true
+    )
+    SELECT jsonb_agg(
+        jsonb_build_object(
+            'id', id,
+            'parent_id', parent_id,
+            'config_data', config_data,
+            'level', level
+        ) ORDER BY level
+    ) INTO node_data
+    FROM node_tree;
+    
+    IF node_data IS NULL THEN
+        RETURN '{}'::jsonb;
+    END IF;
+    
+    -- 按层级计算
+    FOR i IN 0..(jsonb_array_length(node_data) - 1) LOOP
+        DECLARE
+            node jsonb := node_data -> i;
+            nid uuid := (node ->> 'id')::uuid;
+            pid uuid := NULLIF(node ->> 'parent_id', '')::uuid;
+            cfg jsonb := node -> 'config_data';
+            parent_cfg jsonb;
+        BEGIN
+            IF pid IS NULL THEN
+                computed_configs := jsonb_set(computed_configs, ARRAY[nid::text], cfg);
+            ELSE
+                parent_cfg := computed_configs -> pid::text;
+                computed_configs := jsonb_set(
+                    computed_configs,
+                    ARRAY[nid::text],
+                    data.jsonb_deep_merge(parent_cfg, cfg)
+                );
             END IF;
-
-        ELSE
-            -- 子节点：合并父节点 computed_config
-            UPDATE data.config_nodes
-            SET computed_config = data.jsonb_deep_merge(
-                (SELECT computed_config FROM data.config_nodes WHERE id = r.parent_id),
-                r.config_data
-            )
-            WHERE id = r.id;
-
-            IF r.id = target_id THEN
-                SELECT computed_config INTO result
-                FROM data.config_nodes
-                WHERE id = r.id;
+            
+            IF nid = target_id THEN
+                target_config := computed_configs -> nid::text;
             END IF;
-        END IF;
+        END;
     END LOOP;
-
-    RETURN COALESCE(result, '{}'::jsonb);
+    
+    -- 批量更新
+    UPDATE data.config_nodes cn
+    SET computed_config = cc.value,
+        updated_at = NOW()
+    FROM jsonb_each(computed_configs) cc
+    WHERE cn.id = (cc.key)::uuid;
+    
+    RETURN COALESCE(target_config, '{}'::jsonb);
 END;
 $$;
 
@@ -4331,39 +4740,6 @@ $$;
 ALTER FUNCTION data.refresh_user_configs() OWNER TO geohuz;
 
 --
--- Name: refresh_virtual_key_computed_config(uuid); Type: FUNCTION; Schema: data; Owner: geohuz
---
-
-CREATE FUNCTION data.refresh_virtual_key_computed_config(p_virtual_key_id uuid) RETURNS jsonb
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    base_config jsonb;
-    vk record;
-BEGIN
-    SELECT * INTO vk
-    FROM data.virtual_key
-    WHERE id = p_virtual_key_id;
-
-    IF vk.primary_config_node_id IS NULL THEN
-        RETURN vk.config_data;
-    END IF;
-
-base_config := COALESCE(
-    data.refresh_node_and_descendants(vk.primary_config_node_id),
-    '{}'::jsonb
-);
-
-
-
-    RETURN base_config || vk.config_data;
-END;
-$$;
-
-
-ALTER FUNCTION data.refresh_virtual_key_computed_config(p_virtual_key_id uuid) OWNER TO geohuz;
-
---
 -- Name: refresh_virtual_keys_for_node(uuid); Type: FUNCTION; Schema: data; Owner: geohuz
 --
 
@@ -4437,6 +4813,51 @@ $$;
 
 
 ALTER FUNCTION data.release_stuck_payments() OWNER TO geohuz;
+
+--
+-- Name: sync_balance(); Type: FUNCTION; Schema: data; Owner: geohuz
+--
+
+CREATE FUNCTION data.sync_balance() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    start_time TIMESTAMP := NOW();
+    updated_count INT;
+BEGIN
+    -- 每个账户取最新的一条balance_after，更新到account_balance
+    WITH latest_balances AS (
+        SELECT DISTINCT ON (account_id)
+            account_id,
+            balance_after
+        FROM data.usage_log
+        WHERE sync_status = 'completed'
+          AND balance_after IS NOT NULL
+        ORDER BY account_id, created_at DESC
+    )
+    UPDATE data.account_balance ab
+    SET 
+        balance = lb.balance_after,
+        last_balance_calc = NOW(),
+        updated_at = NOW()
+    FROM latest_balances lb
+    WHERE ab.id = lb.account_id
+      AND ab.status = 'active'
+      AND (ab.balance IS NULL OR ab.balance != lb.balance_after);
+    
+    GET DIAGNOSTICS updated_count = ROW_COUNT;
+    
+    -- 记录简单日志
+    INSERT INTO data.balance_sync_log (updated_accounts, duration_ms)
+    VALUES (
+        updated_count, 
+        EXTRACT(EPOCH FROM (NOW() - start_time)) * 1000
+    );
+END;
+$$;
+
+
+ALTER FUNCTION data.sync_balance() OWNER TO geohuz;
 
 --
 -- Name: update_children_config(uuid); Type: FUNCTION; Schema: data; Owner: geohuz
@@ -4777,32 +5198,32 @@ ALTER FUNCTION data.validate_gateway_control_schema() OWNER TO geohuz;
 CREATE FUNCTION data.virtual_key_trigger_func() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-DECLARE
-    new_computed jsonb;
 BEGIN
-    -- 如果 primary_config_node_id 改变
-    IF TG_OP = 'UPDATE' AND (OLD.primary_config_node_id IS DISTINCT FROM NEW.primary_config_node_id) THEN
-        -- 删除这个 virtual_key_id 的所有映射（因为是一对一关系）
+    -- INSERT 或 UPDATE config_data变更时，重新计算
+    IF TG_OP = 'INSERT' OR 
+       (TG_OP = 'UPDATE' AND OLD.config_data IS DISTINCT FROM NEW.config_data) THEN
+        NEW.computed_config := data.compute_virtual_key_config(NEW.id);
+    END IF;
+
+ 
+    -- 如果primary_config_node_id改变，更新映射表
+    IF TG_OP = 'UPDATE' AND OLD.primary_config_node_id IS DISTINCT FROM NEW.primary_config_node_id THEN
         DELETE FROM data.node_virtual_key_map WHERE virtual_key_id = NEW.id;
         
-        -- 如果新的 node_id 不为空，插入新映射
         IF NEW.primary_config_node_id IS NOT NULL THEN
             INSERT INTO data.node_virtual_key_map(node_id, virtual_key_id)
             VALUES (NEW.primary_config_node_id, NEW.id);
-
-        -- 刷新 computed_config
-        new_computed := data.refresh_virtual_key_computed_config(NEW.id);
-        NEW.computed_config := new_computed;
-
-        -- 通知 Node.js 缓存失效
-        PERFORM pg_notify('virtual_key_config_changed', NEW.id::text);
-
         END IF;
-
-
     END IF;
-
-
+    
+    -- 发送通知（无论是config_data还是primary_config_node_id变更）
+    IF TG_OP = 'UPDATE' AND (
+        OLD.config_data IS DISTINCT FROM NEW.config_data OR
+        OLD.primary_config_node_id IS DISTINCT FROM NEW.primary_config_node_id
+    ) THEN
+        PERFORM pg_notify('virtual_key_changed', NEW.id::text);
+    END IF;
+    
     RETURN NEW;
 END;
 $$;
@@ -5665,6 +6086,86 @@ CREATE TABLE data.audit_trail (
 ALTER TABLE data.audit_trail OWNER TO geohuz;
 
 --
+-- Name: balance_reconciliation_log; Type: TABLE; Schema: data; Owner: geohuz
+--
+
+CREATE TABLE data.balance_reconciliation_log (
+    id bigint NOT NULL,
+    recon_time timestamp without time zone DEFAULT now(),
+    recon_type character varying(20),
+    total_accounts_checked integer DEFAULT 0,
+    accounts_with_errors integer DEFAULT 0,
+    accounts_with_warnings integer DEFAULT 0,
+    total_discrepancy_amount numeric DEFAULT 0,
+    max_discrepancy_amount numeric DEFAULT 0,
+    status character varying(20) DEFAULT 'running'::character varying,
+    duration_seconds double precision,
+    error_details jsonb DEFAULT '{}'::jsonb,
+    check_start_time timestamp without time zone,
+    check_end_time timestamp without time zone DEFAULT now(),
+    created_at timestamp without time zone DEFAULT now()
+);
+
+
+ALTER TABLE data.balance_reconciliation_log OWNER TO geohuz;
+
+--
+-- Name: balance_reconciliation_log_id_seq; Type: SEQUENCE; Schema: data; Owner: geohuz
+--
+
+CREATE SEQUENCE data.balance_reconciliation_log_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE data.balance_reconciliation_log_id_seq OWNER TO geohuz;
+
+--
+-- Name: balance_reconciliation_log_id_seq; Type: SEQUENCE OWNED BY; Schema: data; Owner: geohuz
+--
+
+ALTER SEQUENCE data.balance_reconciliation_log_id_seq OWNED BY data.balance_reconciliation_log.id;
+
+
+--
+-- Name: balance_sync_log; Type: TABLE; Schema: data; Owner: geohuz
+--
+
+CREATE TABLE data.balance_sync_log (
+    id bigint NOT NULL,
+    sync_time timestamp without time zone DEFAULT now(),
+    updated_accounts integer,
+    duration_ms double precision
+);
+
+
+ALTER TABLE data.balance_sync_log OWNER TO geohuz;
+
+--
+-- Name: balance_sync_log_id_seq; Type: SEQUENCE; Schema: data; Owner: geohuz
+--
+
+CREATE SEQUENCE data.balance_sync_log_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE data.balance_sync_log_id_seq OWNER TO geohuz;
+
+--
+-- Name: balance_sync_log_id_seq; Type: SEQUENCE OWNED BY; Schema: data; Owner: geohuz
+--
+
+ALTER SEQUENCE data.balance_sync_log_id_seq OWNED BY data.balance_sync_log.id;
+
+
+--
 -- Name: billing_event; Type: TABLE; Schema: data; Owner: geohuz
 --
 
@@ -6081,6 +6582,20 @@ CREATE TABLE internal.system_config (
 ALTER TABLE internal.system_config OWNER TO geohuz;
 
 --
+-- Name: balance_reconciliation_log id; Type: DEFAULT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.balance_reconciliation_log ALTER COLUMN id SET DEFAULT nextval('data.balance_reconciliation_log_id_seq'::regclass);
+
+
+--
+-- Name: balance_sync_log id; Type: DEFAULT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.balance_sync_log ALTER COLUMN id SET DEFAULT nextval('data.balance_sync_log_id_seq'::regclass);
+
+
+--
 -- Name: fund_transactions id; Type: DEFAULT; Schema: data; Owner: geohuz
 --
 
@@ -6140,6 +6655,22 @@ ALTER TABLE ONLY data.api_key
 
 ALTER TABLE ONLY data.audit_trail
     ADD CONSTRAINT audit_trail_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: balance_reconciliation_log balance_reconciliation_log_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.balance_reconciliation_log
+    ADD CONSTRAINT balance_reconciliation_log_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: balance_sync_log balance_sync_log_pkey; Type: CONSTRAINT; Schema: data; Owner: geohuz
+--
+
+ALTER TABLE ONLY data.balance_sync_log
+    ADD CONSTRAINT balance_sync_log_pkey PRIMARY KEY (id);
 
 
 --
@@ -6716,6 +7247,13 @@ CREATE INDEX idx_usage_log_account ON data.usage_log USING btree (account_id) WH
 
 
 --
+-- Name: idx_usage_log_account_created_desc; Type: INDEX; Schema: data; Owner: geohuz
+--
+
+CREATE INDEX idx_usage_log_account_created_desc ON data.usage_log USING btree (account_id, created_at DESC) INCLUDE (balance_after) WHERE ((sync_status)::text = 'completed'::text);
+
+
+--
 -- Name: idx_usage_log_composite; Type: INDEX; Schema: data; Owner: geohuz
 --
 
@@ -6807,13 +7345,6 @@ CREATE TRIGGER config_types_notify AFTER INSERT OR DELETE OR UPDATE ON data.conf
 
 
 --
--- Name: config_nodes notify_node_changed_trigger; Type: TRIGGER; Schema: data; Owner: geohuz
---
-
-CREATE TRIGGER notify_node_changed_trigger AFTER UPDATE OF config_data, parent_id ON data.config_nodes FOR EACH ROW EXECUTE FUNCTION data.notify_node_changed();
-
-
---
 -- Name: payment_jobs payment_job_created_notify; Type: TRIGGER; Schema: data; Owner: geohuz
 --
 
@@ -6852,7 +7383,7 @@ CREATE TRIGGER trg_customer_type_rate_update AFTER INSERT OR DELETE OR UPDATE ON
 -- Name: gateway_control_config trg_gateway_control_notify; Type: TRIGGER; Schema: data; Owner: geohuz
 --
 
-CREATE TRIGGER trg_gateway_control_notify AFTER INSERT OR DELETE OR UPDATE ON data.gateway_control_config FOR EACH ROW EXECUTE FUNCTION data.notify_gateway_control_change();
+CREATE TRIGGER trg_gateway_control_notify AFTER INSERT OR DELETE OR UPDATE ON data.gateway_control_config FOR EACH STATEMENT EXECUTE FUNCTION data.notify_gateway_control_change();
 
 
 --
@@ -6882,7 +7413,7 @@ CREATE TRIGGER trg_validate_gateway_schema BEFORE INSERT OR UPDATE ON data.gatew
 -- Name: virtual_key trg_virtual_key; Type: TRIGGER; Schema: data; Owner: geohuz
 --
 
-CREATE TRIGGER trg_virtual_key AFTER INSERT OR UPDATE OF primary_config_node_id, config_data ON data.virtual_key FOR EACH ROW EXECUTE FUNCTION data.virtual_key_trigger_func();
+CREATE TRIGGER trg_virtual_key BEFORE INSERT OR UPDATE OF primary_config_node_id, config_data ON data.virtual_key FOR EACH ROW EXECUTE FUNCTION data.virtual_key_trigger_func();
 
 
 --
@@ -7807,5 +8338,5 @@ GRANT SELECT ON TABLE internal.system_config TO sys_admin;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict tX0NaLiRbU6GuqnThOtu7Lfu5GyPQRmlNFD7kDOLmfNdCPqMzvUuxWpjqc7TBh6
+\unrestrict ZGTOiWAc03obFWicyYqSlvp4bVKK6xp7ZEZiMuWy1sWdgcyKfClvNYmeGxFQhUW
 
