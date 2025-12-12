@@ -245,6 +245,25 @@ async function validateBusinessRules(userContext, requestBody, path, traceId) {
 async function checkBudget(userContext, requestBody, path, traceId) {
   const { virtual_key } = userContext;
 
+  const logBalanceCheck = (status, data) => {
+    const logData = {
+      traceId,
+      virtual_key,
+      account_type: data.account_type,
+      user_id: data.user_id,
+      balance: data.balance,
+      ...data.additionalFields,
+    };
+
+    if (status === "ERROR") {
+      logger.error("[BALANCE_CHECK] 余额检查失败", logData);
+    } else if (status === "WARN") {
+      logger.warn("[BALANCE_CHECK] 余额检查警告", logData);
+    } else {
+      logger.debug("[BALANCE_CHECK] 余额检查通过", logData);
+    }
+  };
+
   try {
     const billingContext = await balanceService.getBillingContext(virtual_key);
     const account = billingContext.account;
@@ -263,22 +282,38 @@ async function checkBudget(userContext, requestBody, path, traceId) {
     if (!balanceCheckResult.allowed) {
       // 余额不足或触发硬限制
       let errorMsg;
-      if (balanceCheckResult.reason === "HARD_LIMIT_EXCEEDED") {
+      let reason = balanceCheckResult.reason;
+
+      if (reason === "HARD_LIMIT_EXCEEDED") {
         errorMsg = `余额不足: ${balanceCheckResult.balance.toFixed(4)} <= ${balanceCheckResult.limit_value} (硬限额)`;
-      } else if (balanceCheckResult.reason === "INSUFFICIENT_BALANCE") {
+      } else if (reason === "INSUFFICIENT_BALANCE") {
         errorMsg = `余额不足支付请求: ${balanceCheckResult.balance.toFixed(4)} < ${balanceCheckResult.required}`;
       } else {
-        errorMsg = `余额检查失败: ${balanceCheckResult.reason}`;
+        errorMsg = `余额检查失败: ${reason}`;
       }
+
+      // 先记录错误日志
+      logBalanceCheck("ERROR", {
+        account_type: account.account_type,
+        user_id: account.operating_user_id,
+        balance: balanceCheckResult.balance?.toFixed(4),
+        additionalFields: {
+          reason,
+          limit_type: balanceCheckResult.limit_type,
+          limit_value: balanceCheckResult.limit_value,
+          required: balanceCheckResult.required,
+          error_message: errorMsg,
+        },
+      });
 
       const error = new Error(errorMsg);
       error.code = "INSUFFICIENT_BALANCE";
+      error.traceId = traceId; // 将 traceId 附加到错误对象上
       error.context = {
-        traceId,
         user_id: account.operating_user_id,
         virtual_key,
         balance: balanceCheckResult.balance,
-        reason: balanceCheckResult.reason,
+        reason,
         limit_type: balanceCheckResult.limit_type,
         limit_value: balanceCheckResult.limit_value,
         account_type: account.account_type,
@@ -287,25 +322,40 @@ async function checkBudget(userContext, requestBody, path, traceId) {
     }
 
     // 6. 检查通过，记录日志
-    logger.debug("[BALANCE_CHECK] ✅ 余额检查通过", {
-      traceId,
-      virtual_key,
-      balance: balanceCheckResult.balance?.toFixed(4),
+    logBalanceCheck("SUCCESS", {
       account_type: account.account_type,
-      status: "OK",
+      user_id: account.operating_user_id,
+      balance: balanceCheckResult.balance?.toFixed(4),
+      additionalFields: {
+        status: "OK",
+        limit_type: balanceCheckResult.limit_type,
+        limit_value: balanceCheckResult.limit_value,
+      },
     });
 
     // 7. 返回计费上下文，用于后续扣费
     return billingContext;
   } catch (error) {
-    // 错误处理...
+    // 如果是余额不足错误，已经记录过日志，直接重新抛出
     if (error.code === "INSUFFICIENT_BALANCE") {
       throw error;
     }
 
-    const wrappedError = new Error(`预算检查失败: ${error.message}`);
-    wrappedError.originalError = error;
-    throw wrappedError;
+    // 其他错误（如网络错误、服务异常等）
+    logBalanceCheck("ERROR", {
+      account_type: account?.account_type || "unknown",
+      user_id: account?.operating_user_id || "unknown",
+      balance: "unknown",
+      additionalFields: {
+        reason: "SERVICE_ERROR",
+        error_message: error.message,
+        error_stack: error.stack,
+      },
+    });
+
+    // 重新抛出错误
+    error.traceId = traceId;
+    throw error;
   }
 }
 
