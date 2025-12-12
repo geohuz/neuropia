@@ -5,6 +5,8 @@ const RedisService = require("@shared/clients/redis_op");
 const CACHE_KEYS = require("../constants/cacheKeys");
 const logger = require("@shared/utils/logger"); // 引入 logger
 
+const CACHE_TTL = 24 * 60 * 60; // 86400秒
+
 class ConfigService {
   /**
    * 获取完整配置（入口）
@@ -58,7 +60,7 @@ class ConfigService {
     // 4. 写入缓存（TTL: 300 秒）
     await RedisService.kv.setex(
       cacheKey,
-      300,
+      CACHE_TTL,
       JSON.stringify(configWithApiKeys),
     );
     logger.info("配置缓存写入", { virtualKey });
@@ -100,44 +102,58 @@ class ConfigService {
       openai: process.env.OPENAI_API_KEY,
       anthropic: process.env.ANTHROPIC_API_KEY,
       dashscope: process.env.DASHSCOPE_API_KEY,
+      // 考虑添加更多provider
     };
 
-    function processTargets(targets) {
-      return targets.map((target) => {
-        // 递归处理嵌套 targets
-        if (target.targets) {
-          return {
-            ...target,
-            targets: processTargets(target.targets),
-          };
-        }
+    // 处理Portkey格式
+    const portkeyConfig = config["x-portkey-config"] || config;
 
-        // 为没有 api_key 的 target 注入
-        if (target.provider && !target.api_key) {
-          const apiKey = providerKeys[target.provider];
-          if (!apiKey) {
-            logger.warn(`未找到 ${target.provider} 的 API KEY`, { target });
-          }
+    function processObject(obj) {
+      if (!obj || typeof obj !== "object") return obj;
+
+      // 如果是target且有provider但没有api_key
+      if (obj.provider && !obj.api_key) {
+        const apiKey = providerKeys[obj.provider];
+        if (apiKey) {
           return {
-            ...target,
+            ...obj,
             api_key: apiKey,
           };
+        } else {
+          logger.warn(`未找到 ${obj.provider} 的 API KEY`, {
+            provider: obj.provider,
+            availableProviders: Object.keys(providerKeys),
+          });
         }
+      }
 
-        return target;
-      });
+      // 递归处理嵌套对象
+      const result = { ...obj };
+      for (const key in result) {
+        if (Array.isArray(result[key])) {
+          result[key] = result[key].map(processObject);
+        } else if (result[key] && typeof result[key] === "object") {
+          result[key] = processObject(result[key]);
+        }
+      }
+
+      return result;
     }
 
-    const processedConfig = {
-      ...config,
-      targets: processTargets(config.targets || []),
-    };
+    const processedConfig = processObject(portkeyConfig);
+
+    // 如果是Portkey格式，恢复结构
+    const finalConfig = config["x-portkey-config"]
+      ? { ...config, "x-portkey-config": processedConfig }
+      : processedConfig;
 
     logger.debug("API KEY 注入完成", {
-      providerCount: config.targets?.length || 0,
+      hasOpenAI: !!providerKeys.openai,
+      hasAnthropic: !!providerKeys.anthropic,
+      hasDashscope: !!providerKeys.dashscope,
     });
 
-    return processedConfig;
+    return finalConfig;
   }
 }
 
