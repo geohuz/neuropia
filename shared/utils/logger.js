@@ -8,7 +8,13 @@ const logLevel = process.env.LOG_LEVEL || (isProduction ? "info" : "debug");
 const logger = winston.createLogger({
   level: logLevel,
   format: winston.format.combine(
-    winston.format.timestamp(), // 这里已经有了时间戳
+    winston.format.timestamp({
+      format: () =>
+        new Date(Date.now() + 8 * 60 * 60 * 1000)
+          .toISOString()
+          .replace("T", " ")
+          .slice(0, 19),
+    }), // 这里已经有了时间戳
     winston.format.errors({ stack: true }), // ✅ 自动捕获堆栈
     winston.format.json(), // ✅ 统一使用 JSON 格式，总是包含 timestamp
   ),

@@ -19,9 +19,23 @@ async function start() {
     await Promise.all(listenPromises);
 
     listenClient.on("notification", (msg) => {
-      // 立即触发事件
       setImmediate(() => {
-        eventBus.emit(msg.channel, JSON.parse(msg.payload));
+        try {
+          let payload;
+          // 尝试解析为JSON，失败就当作纯文本
+          try {
+            payload = JSON.parse(msg.payload);
+          } catch {
+            payload = msg.payload; // 保持纯文本
+          }
+          eventBus.emit(msg.channel, payload);
+        } catch (error) {
+          logger.error(`处理通知失败`, {
+            channel: msg.channel,
+            payload: msg.payload,
+            error,
+          });
+        }
       });
     });
 
