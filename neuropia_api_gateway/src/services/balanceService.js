@@ -143,7 +143,8 @@ class BalanceService {
   // 处理账户余额变动（异步通知，需要catch）
   // ------------------------------
   async handleFundTransaction(payload) {
-    const { account_id, account_type, amount } = payload;
+    const { account_id, account_type, amount, account_owner_id, user_id } =
+      payload;
 
     logger.info(`资金变动: ${account_type}:${account_id}`, {
       change_amount: amount,
@@ -182,62 +183,84 @@ class BalanceService {
       return {currentBalance, newBalance}
     `;
 
-    const result = await RedisService.kv.eval(
-      updateBalanceScript,
-      1, // keys数量
-      balanceKey,
-      amount.toString(),
-      new Date().toISOString(),
-    );
+    // 直接使用Redis client（和其他地方保持一致）
+    const client = await RedisService.connect();
 
-    const [oldBalance, newBalance] = result;
-
-    // 转为数字
-    const oldBal = parseFloat(oldBalance);
-    const newBal = parseFloat(newBalance);
-
-    logger.info(`Redis 余额更新完成`, {
-      account_id,
-      account_type,
-      amount,
-      old_balance: oldBal,
-      new_balance: newBal,
-      redis_key: balanceKey,
+    const rawResult = await client.eval(updateBalanceScript, {
+      keys: [balanceKey],
+      arguments: [amount.toString(), new Date().toISOString()],
     });
 
-    // 重要!!! 通过stream写入usage_log（充值记录）
-    // 处理如果充值不消费场景. 最新的balance写入usage_log
+    // 你的LUA脚本返回的是数组 {currentBalance, newBalance}
+    // 但需要确认是否经过JSON编码
+    let result;
+
+    // 尝试解析JSON
+    try {
+      result = JSON.parse(rawResult);
+    } catch {
+      // 如果不是JSON，直接使用
+      result = rawResult;
+    }
+
+    // 检查错误
+    if (result && result.err) {
+      throw new Error(`Redis更新失败: ${result.err}`);
+    }
+
+    // 解析余额
+    let oldBalance, newBalance;
+    if (Array.isArray(result)) {
+      [oldBalance, newBalance] = result.map((v) => parseFloat(v));
+    } else if (result && typeof result === "object") {
+      oldBalance = result.currentBalance || result.balance_before || 0;
+      newBalance =
+        result.newBalance || result.balance_after || result.balance || 0;
+    } else {
+      // 未知格式，使用默认值
+      oldBalance = 0;
+      newBalance = amount;
+    }
+
+    logger.info(`Redis余额更新完成`, {
+      account_id,
+      old_balance: oldBalance,
+      new_balance: newBalance,
+      delta: newBalance - oldBalance,
+    });
+
+    // 写入stream
     this._writeToStreamInBackground({
       account_id: account_id,
+      account_owner_id: account_owner_id,
+      user_id: user_id,
       account_type: account_type,
-      cost: 0, // 充值金额为0
-      currency: "USD",
-      provider: "balance_sync", // 特殊标记
-      model: "system", // 特殊标记
-      input_tokens: 0, // 无token
-      output_tokens: 0, // 无token
+      virtual_key: "",
+      cost: 0,
+      currency: "",
+      provider: "balance_sync",
+      model: "system",
+      input_tokens: 0,
+      output_tokens: 0,
       total_tokens: 0,
-      balance_before: oldBalance, // 充值前余额
-      balance_after: newBalance, // 充值后余额
-      // 这些字段充值没有，但stream可能需要：
-      price_rate_id: null,
-      virtual_key: null,
-      trace_id: `balance_update_${Date.now()}`,
-      // 在metadata里记录实际充值金额
-      metadata: {
-        transaction_type: "recharge",
-        original_amount: amount,
-        source: "gateway_balance_update",
-      },
+      balance_before: oldBalance,
+      balance_after: newBalance,
+      trace_id: "",
+      price_rate_id: "",
     }).catch((err) => {
-      logger.error("充值记录写入stream失败", {
-        account_id,
-        amount,
-        error: err.message,
-      });
+      logger.error("stream写入失败", { error: err.message });
     });
-    // 2. 失效相关缓存
+
+    // 清理缓存
     await this._invalidateRelatedCaches(account_type, account_id);
+  }
+  catch(error) {
+    logger.error("handleFundTransaction失败", {
+      payload,
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
   }
 
   async _invalidateRelatedCaches(accountType, accountId) {

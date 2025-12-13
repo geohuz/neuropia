@@ -134,14 +134,16 @@ function validateAndFilterMessages(messages) {
         "provider",
         "model",
       ];
-      const missingFields = requiredFields.filter((field) => !msg[field]);
+      const missingFields = requiredFields.filter(
+        (field) => msg[field] === null || msg[field] === undefined,
+      );
 
       if (missingFields.length > 0) {
         throw new Error(`缺少必填字段: ${missingFields.join(", ")}`);
       }
 
       // 数据类型检查
-      if (typeof msg.cost !== "number" || msg.cost <= 0) {
+      if (typeof msg.cost !== "number" || msg.cost < 0) {
         throw new Error(`无效的扣费金额: ${msg.cost}`);
       }
 
