@@ -199,7 +199,11 @@ function validateAndFilterMessages(messages) {
       }
 
       // 🆕 余额逻辑一致性检查（如果两个余额都存在）
-      if (msg.balance_before !== undefined && msg.balance_after !== undefined) {
+      if (
+        msg.balance_before !== undefined &&
+        msg.balance_after !== undefined &&
+        msg.provider != "balance_sync"
+      ) {
         const expectedBalanceAfter = msg.balance_before - msg.cost;
         const balanceDiff = Math.abs(msg.balance_after - expectedBalanceAfter);
 
@@ -217,7 +221,10 @@ function validateAndFilterMessages(messages) {
         }
 
         // 如果扣费后余额大于扣费前，发出警告
-        if (msg.balance_after > msg.balance_before) {
+        if (
+          msg.balance_after > msg.balance_before &&
+          msg.provider != "balance_sync"
+        ) {
           logger.warn(
             `⚠️ 扣费后余额大于扣费前余额: after(${msg.balance_after}) > before(${msg.balance_before})`,
             {
