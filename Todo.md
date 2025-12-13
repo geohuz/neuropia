@@ -1174,5 +1174,11 @@ CREATE TABLE IF NOT EXISTS data.audit_trail (
 
 消费限额, tpm, rpm
 
-# 以及全链路请求 audit trail
+# 增加 deepseek 模型测试
+
+# 以及全链路请求的 audit trail
+
+# fund transactions
+
+
 

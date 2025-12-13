@@ -49,9 +49,9 @@ class BalanceService {
       async (payload) => {
         // ✅ 通知回调需要catch，避免未处理异常
         try {
-          await this.handleBalanceChange(payload);
+          await this.handleFundTransaction(payload);
         } catch (error) {
-          logger.error("handleBalanceChange失败", {
+          logger.error("handleFundTransaction失败", {
             payload,
             error: error.message,
           });
@@ -142,27 +142,100 @@ class BalanceService {
   // ------------------------------
   // 处理账户余额变动（异步通知，需要catch）
   // ------------------------------
-  async handleBalanceChange(payload) {
-    const { account_id, account_type, old_balance, new_balance } = payload;
+  async handleFundTransaction(payload) {
+    const { account_id, account_type, amount } = payload;
 
-    logger.info(`余额变动: ${account_type}:${account_id}`, {
-      old_balance,
-      new_balance,
-      delta: new_balance - old_balance,
+    logger.info(`资金变动: ${account_type}:${account_id}`, {
+      change_amount: amount,
     });
 
-    // 1. 更新Redis缓存
+    // 1. 原子更新Redis余额（保持JSON格式）
     const balanceKey = CACHE_KEYS.BALANCE(account_type, account_id);
-    await RedisService.kv.setex(
+
+    // LUA脚本：原子增减余额，保持JSON格式
+    const updateBalanceScript = `
+      local key = KEYS[1]
+      local delta = tonumber(ARGV[1])
+
+      -- 获取当前余额JSON
+      local currentJson = redis.call('GET', key)
+      local currentBalance = 0
+
+      if currentJson then
+        -- 解析现有的JSON
+        local data = cjson.decode(currentJson)
+        currentBalance = tonumber(data.balance) or 0
+      end
+
+      -- 计算新余额
+      local newBalance = currentBalance + delta
+
+      -- 更新Redis（永不过期，保持JSON格式）
+      local newData = {
+        balance = newBalance,
+        updated_at = ARGV[2],
+        source = "notify"
+      }
+
+      redis.call('SET', key, cjson.encode(newData))
+
+      return {currentBalance, newBalance}
+    `;
+
+    const result = await RedisService.kv.eval(
+      updateBalanceScript,
+      1, // keys数量
       balanceKey,
-      CACHE_KEYS.TTL.BALANCE,
-      JSON.stringify({
-        balance: new_balance,
-        updated_at: new Date().toISOString(),
-        source: "notify",
-      }),
+      amount.toString(),
+      new Date().toISOString(),
     );
 
+    const [oldBalance, newBalance] = result;
+
+    // 转为数字
+    const oldBal = parseFloat(oldBalance);
+    const newBal = parseFloat(newBalance);
+
+    logger.info(`Redis 余额更新完成`, {
+      account_id,
+      account_type,
+      amount,
+      old_balance: oldBal,
+      new_balance: newBal,
+      redis_key: balanceKey,
+    });
+
+    // 重要!!! 通过stream写入usage_log（充值记录）
+    // 处理如果充值不消费场景. 最新的balance写入usage_log
+    this._writeToStreamInBackground({
+      account_id: account_id,
+      account_type: account_type,
+      cost: 0, // 充值金额为0
+      currency: "USD",
+      provider: "balance_sync", // 特殊标记
+      model: "system", // 特殊标记
+      input_tokens: 0, // 无token
+      output_tokens: 0, // 无token
+      total_tokens: 0,
+      balance_before: oldBalance, // 充值前余额
+      balance_after: newBalance, // 充值后余额
+      // 这些字段充值没有，但stream可能需要：
+      price_rate_id: null,
+      virtual_key: null,
+      trace_id: `balance_update_${Date.now()}`,
+      // 在metadata里记录实际充值金额
+      metadata: {
+        transaction_type: "recharge",
+        original_amount: amount,
+        source: "gateway_balance_update",
+      },
+    }).catch((err) => {
+      logger.error("充值记录写入stream失败", {
+        account_id,
+        amount,
+        error: err.message,
+      });
+    });
     // 2. 失效相关缓存
     await this._invalidateRelatedCaches(account_type, account_id);
   }
@@ -211,9 +284,14 @@ class BalanceService {
     // 构建上下文（内部错误自然抛出）
     const context = await this._buildBillingContext(virtualKey);
 
-    await RedisService.kv.setex(
+    // await RedisService.kv.setex(
+    //   cacheKey,
+    //   CACHE_KEYS.TTL.BILLING_CONTEXT,
+    //   JSON.stringify(context),
+    // );
+    await RedisService.kv.set(
       cacheKey,
-      CACHE_KEYS.TTL.BILLING_CONTEXT,
+      // CACHE_KEYS.TTL.BILLING_CONTEXT,
       JSON.stringify(context),
     );
 
@@ -254,7 +332,7 @@ class BalanceService {
         // overdue_amount: account.overdue_amount,
         // ⚠️ 重要说明：这里不缓存余额！
         // 原因：余额变动频繁，需要单独缓存（见CACHE_KEYS.BALANCE）
-        // 余额通过handleBalanceChange()实时更新
+        // 余额通过()实时更新
         // ❌ 不要在这里加balance字段
       },
       pricing: {
@@ -337,7 +415,19 @@ class BalanceService {
   }
 
   /**
-   * 计算费用
+   * 计算API调用费用
+   *
+   * 计费逻辑优先级：
+   * 1. 统一按token计费模式（pricing_model === "per_token"）
+   *   公式：cost = (input_tokens + output_tokens) × price_per_token
+   *
+   * 2. 输入输出分开计费模式（有独立的input/output单价）
+   *   公式：cost = (input_tokens × price_per_input_token) + (output_tokens × price_per_output_token)
+   *
+   * 3. 兼容模式（只有price_per_token）
+   *   公式：cost = (input_tokens + output_tokens) × price_per_token
+   *
+   * 4. 以上都不满足则抛出错误
    */
   async calculateCost(virtualKey, provider, model, usage) {
     // ✅ 不catch，让错误自然抛出
@@ -394,6 +484,9 @@ class BalanceService {
         usage,
       );
 
+      // customer_type_id
+      const priceRateId = calculation.price_rate_id;
+
       // 调试用：检查currency
       if (!calculation.currency) {
         logger.warn("currency字段缺失，使用默认值", { virtualKey });
@@ -434,6 +527,7 @@ class BalanceService {
           account_id: context.account.id,
           account_owner_id: context.account.account_owner_id, // ✅ 业务ID（便于追溯）
           user_id: context.account.operating_user_id,
+          price_rate_id: priceRateId,
           account_type: context.account.type,
           virtual_key: virtualKey,
           cost: cost,

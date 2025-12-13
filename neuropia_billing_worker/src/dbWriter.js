@@ -245,6 +245,7 @@ function validateAndFilterMessages(messages) {
           msg.balance_after !== undefined ? msg.balance_after : null,
         trace_id: msg.trace_id || null,
         user_id: msg.user_id || null,
+        price_rate_id: msg.price_rate_id || null,
       };
 
       validMessages.push(validatedMsg);
@@ -338,7 +339,9 @@ async function insertUsageLogs(client, accountGroups) {
       $${paramIndex++},   -- 🆕 balance_after
       $${paramIndex++},   -- 🆕 user_id
       $${paramIndex++},   -- 🆕 tenant_id
-      $${paramIndex++}    -- 🆕 trace_id
+      $${paramIndex++},    -- 🆕 trace_id,
+      $${paramIndex++}    -- 🆕 price_rate_id
+
     )`);
 
     params.push(
@@ -360,6 +363,7 @@ async function insertUsageLogs(client, accountGroups) {
       msg.user_id || null, // 🆕 直接从msg中取 from dbMessage
       msg.tenant_id || null, // 🆕 直接从msg中取
       msg.trace_id || null,
+      msg.price_rate_id || null,
     );
   }
 
@@ -368,7 +372,7 @@ async function insertUsageLogs(client, accountGroups) {
       deduction_id, virtual_key, account_id, account_type,
       provider, model, cost, currency, created_at,
       input_tokens, output_tokens, metadata_json, sync_status,
-      balance_before, balance_after, user_id, tenant_id, trace_id
+      balance_before, balance_after, user_id, tenant_id, trace_id, price_rate_id
     ) VALUES ${values.join(", ")}
     ON CONFLICT (deduction_id) DO NOTHING
     RETURNING id, deduction_id

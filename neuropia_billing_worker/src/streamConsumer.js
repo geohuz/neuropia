@@ -389,6 +389,7 @@ async function processMessageBatch(messages, config) {
         user_id: user_id,
         tenant_id: tenant_id,
         trace_id: msg.trace_id,
+        price_rate_id: msg.price_rate_id,
       };
     });
 

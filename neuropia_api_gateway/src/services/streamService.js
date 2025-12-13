@@ -75,6 +75,8 @@ function buildXAddArgs(streamKey, message) {
     message.trace_id,
     "user_id",
     message.user_id,
+    "price_rate_id",
+    message.price_rate_id,
   ];
 
   // 🆕 添加余额信息
@@ -119,6 +121,7 @@ async function writeDeduction(deductionData) {
       account_owner_id: deductionData.account_owner_id,
       trace_id: deductionData.trace_id,
       user_id: deductionData.user_id,
+      price_rate_id: deductionData.price_rate_id,
     };
 
     const client = await RedisService.connect();
@@ -184,6 +187,7 @@ async function writeDeductionsBatch(deductionsArray) {
       account_owner_id: deduction.account_owner_id,
       trace_id: deduction.trace_id,
       user_id: deduction.user_id,
+      price_rate_id: deduction.price_rate_id,
     };
 
     batchGroups[shardKey].push(message);
@@ -223,6 +227,7 @@ async function writeDeductionsBatch(deductionsArray) {
             }),
             trace_id: message.trace_id,
             user_id: message.user_id,
+            price_rate_id: message.price_rate_id,
           });
         }
 

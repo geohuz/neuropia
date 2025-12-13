@@ -138,10 +138,10 @@ api.register_user(
 	p_tenant_id uuid DEFAULT NULL::uuid)
 )
 
-* p_role 可以是 norm_user/tenant_admin
+* p_role 可以是norm_user/tenant_admin, default: norm_user
 * p_role 如果是tenant_admin必须有tenant_id
 * p_role 如果是norm_user, 可选tenant_id(某租户下用户)
-* 注册tenant用户必须先插入tenant信息
+* 注册tenant用户必须先插入tenant表, 建立tenant
 
 
 1. 插入 auth.login（只保存认证信息）
